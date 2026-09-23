@@ -1,0 +1,57 @@
+#science-fieldnotes .configuration-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;margin-bottom:42px;align-items:start}
+#science-fieldnotes .connection-card{padding:25px;border:1px solid var(--ss-line);background:var(--ss-paper);border-radius:12px;min-width:0}
+#science-fieldnotes .connection-heading{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+#science-fieldnotes .connection-heading>div{flex:1;min-width:0}
+#science-fieldnotes .connection-heading h2{font-size:23px;margin:5px 0 0}
+#science-fieldnotes .connection-heading .fn-label{font-size:9px;letter-spacing:1.4px}
+#science-fieldnotes .connection-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;background:var(--ss-soft);color:var(--ss-accent)}
+#science-fieldnotes .connection-icon svg{width:18px}
+#science-fieldnotes .connection-description{font-size:12px;color:var(--ss-muted);line-height:1.8;margin:0 0 22px}
+#science-fieldnotes .connection-fields{border:0;padding:0;margin:0;min-width:0}
+#science-fieldnotes .connection-fields .field{margin-bottom:14px}
+#science-fieldnotes .connection-fields .field small{font-size:11px;color:var(--ss-muted);line-height:1.8;font-weight:normal;overflow-wrap:anywhere}
+#science-fieldnotes .connection-fields select{width:100%;min-width:0}
+#science-fieldnotes .connection-presets{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+#science-fieldnotes .connection-presets button{font-size:11px;border:1px solid var(--ss-line);border-radius:20px;background:var(--ss-soft);padding:7px 12px}
+#science-fieldnotes .connection-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+#science-fieldnotes .connection-card .message{margin:15px 0;font-size:12px}
+#science-fieldnotes .source-builtins{display:grid;gap:1px;margin-bottom:20px}
+#science-fieldnotes .source-builtin{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--ss-line);padding:13px 0}
+#science-fieldnotes .source-builtin>label{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+#science-fieldnotes .source-builtin>label>span{min-width:0}
+#science-fieldnotes .source-builtin strong,#science-fieldnotes .custom-source strong{display:block;font-weight:500;font-size:14px}
+#science-fieldnotes .source-builtin small,#science-fieldnotes .custom-source small{display:block;color:var(--ss-muted);font-size:11px;line-height:1.8;margin-top:3px;overflow-wrap:anywhere}
+#science-fieldnotes .source-builtin input,#science-fieldnotes .custom-source input{accent-color:var(--ss-accent)}
+#science-fieldnotes .custom-source{display:flex;gap:12px;align-items:center;border:1px solid var(--ss-line);padding:12px;margin-bottom:10px;border-radius:8px}
+#science-fieldnotes .custom-source>label{display:flex;gap:10px;align-items:center;flex:1;min-width:0}
+#science-fieldnotes .custom-source>label>span{min-width:0}
+#science-fieldnotes .custom-source>div{display:flex;align-items:center;gap:7px}
+#science-fieldnotes .custom-source .icon-button svg{width:15px}
+#science-fieldnotes .add-source{width:100%;justify-content:center;border-style:dashed}
+#science-fieldnotes .source-editor{background:var(--ss-soft);border-radius:9px;padding:18px;margin-top:12px}
+#science-fieldnotes .source-editor-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+#science-fieldnotes .source-editor-heading h3{font-size:16px;font-weight:500}
+#science-fieldnotes .source-preview{padding:17px;background:var(--ss-soft);margin-top:18px;max-height:420px;overflow:auto;border-radius:8px;overflow-wrap:anywhere;font-size:12px}
+#science-fieldnotes .source-preview>p{margin:8px 0;color:var(--ss-muted);font-size:11px}
+#science-fieldnotes .source-preview article{border-top:1px solid var(--ss-line);padding-top:12px;margin-top:12px}
+#science-fieldnotes .source-preview article p{margin-top:6px;font-size:11px;line-height:1.8;color:var(--ss-muted)}
+#science-fieldnotes #source-settings{margin-bottom:26px}
+#science-fieldnotes .source-options{margin:16px 0;font-size:12px}
+#science-fieldnotes .source-options summary{cursor:pointer;color:var(--ss-accent);line-height:1.8;margin-bottom:14px}
+#science-fieldnotes .source-editor{margin:0 0 18px}
+#science-fieldnotes .source-editor .text-button{display:inline-flex;align-items:center;gap:6px}
+#science-fieldnotes .source-editor .text-button svg{width:14px;height:14px}
+#science-fieldnotes .topic-results-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:30px 0 22px}
+#science-fieldnotes .topic-results-heading h2{font-size:23px;margin:0 0 8px}
+#science-fieldnotes .topic-results-heading p{font-size:12px;color:var(--ss-muted)}
+#science-fieldnotes .collection-result{padding:18px;background:var(--ss-soft);border:1px solid var(--ss-line);border-radius:8px;margin:18px 0;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
+#science-fieldnotes .collection-result ul{padding-left:18px;margin:8px 0 0}
+#science-fieldnotes .collection-result .failed,#science-fieldnotes .collection-failed{color:#93412f}
+#science-fieldnotes .collection-recovery{display:flex;gap:18px;margin:6px 0 12px;align-items:center;flex-wrap:wrap}
+#science-fieldnotes .manual-import{border-top:1px solid var(--ss-line);padding-top:18px;margin-top:20px}
+#science-fieldnotes .manual-import form{margin-top:14px}
+#science-fieldnotes .captured-text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;line-height:1.9;font-size:13px}
+#science-fieldnotes .home-empty{border:1px dashed var(--ss-line);border-radius:12px;padding:35px}
+@media(max-width:600px){#science-fieldnotes .topic-results-heading{align-items:flex-start;flex-direction:column}}
+@media(max-width:1000px){#science-fieldnotes .configuration-grid{grid-template-columns:1fr}#science-fieldnotes .connection-card{padding:22px}}
+@media(max-width:500px){#science-fieldnotes .connection-card{padding:17px}#science-fieldnotes .connection-heading{flex-wrap:wrap;gap:9px}#science-fieldnotes .connection-heading h2{font-size:21px}#science-fieldnotes .connection-fields .field-pair{grid-template-columns:1fr}#science-fieldnotes .custom-source{flex-wrap:wrap}#science-fieldnotes .source-editor{padding:12px}#science-fieldnotes .connection-actions{gap:8px}#science-fieldnotes .connection-actions .ss-btn{flex:1}}
