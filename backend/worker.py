@@ -27,10 +27,11 @@ def update(job_id,stage,progress,message):
         db.event(c,job_id,stage,message)
 
 
-def create(topic_id,mode,request_id,*,submit=True):
-    prefs=db.settings()
-    if mode!='ai':raise ValueError('新选题只支持网络资料制作。')
-    if not config.ai_ready():raise ValueError('请到每日路线配置 AI 密钥和模型，再制作网络选题。')
+def create(topic_id,mode,request_id,*,submit=True,preferences=None,manual_script=None):
+    prefs=preferences or db.settings().model_dump()
+    if mode!='ai' and not manual_script:raise ValueError('新选题只支持网络资料制作。')
+    from .model_library import ready
+    if not manual_script and not ready(prefs.get('model_id','default')):raise ValueError('请在“我的模型”配置模型，并在任务中选择。')
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         existing=c.execute('SELECT * FROM jobs WHERE request_id=?',(request_id,)).fetchone()
@@ -38,13 +39,14 @@ def create(topic_id,mode,request_id,*,submit=True):
         topic=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(topic_id,)).fetchone())
         if not topic:raise ValueError('选题不存在。')
         if topic['kind']!='live':raise ValueError('内置选题已停用，请从网络采集新的选题。')
-        active=c.execute("SELECT * FROM jobs WHERE topic_id=? AND status IN ('queued','running')",(topic_id,)).fetchone()
+        active=c.execute("SELECT * FROM jobs WHERE topic_id=? AND status IN ('queued','running') AND json_extract(settings,'$.task_id') IS ?",(topic_id,prefs.get('task_id'))).fetchone()
         if active:return db.job(active)
         job_id='job-'+uuid.uuid4().hex[:18];now=db.now()
         c.execute('INSERT INTO jobs(id,topic_id,request_id,status,stage,progress,mode,version,settings,source_data,created_at,updated_at,day) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                  (job_id,topic_id,request_id,'queued','queued',0,mode,1,db.dump(prefs.model_dump()),db.dump(topic['sources']),now,now,db.day()))
+                  (job_id,topic_id,request_id,'draft' if manual_script else 'queued','script' if manual_script else 'queued',25 if manual_script else 0,'manual' if manual_script else mode,1,db.dump(prefs),db.dump(topic['sources']),now,now,db.day()))
+        if manual_script:c.execute('UPDATE jobs SET script=? WHERE id=?',(manual_script.model_dump_json(),job_id))
         db.event(c,job_id,'queued','已加入制作队列。')
-    if submit:executor.submit(run,job_id)
+    if submit and not manual_script:executor.submit(run,job_id)
     return get_job(job_id)
 
 
@@ -61,6 +63,14 @@ def retry(job_id,*,submit=True):
 
 
 def run(job_id):
+    from .model_library import use
+    value=get_job(job_id)
+    if not value:return
+    with use(value['settings'].get('model_id','default')):
+        _run(job_id)
+
+
+def _run(job_id):
     with db.connect() as c:
         claimed=c.execute("UPDATE jobs SET status='running',updated_at=? WHERE id=? AND status='queued'",(db.now(),job_id)).rowcount
     if not claimed:return
@@ -75,6 +85,7 @@ def run(job_id):
             if topic['kind']=='live':topic=hydrate(topic)
             sources=topic['sources']
             update(job_id,'script',22,'根据资料编写 1–2 句短标题。' if job['mode']=='ai' else '加载内置标题与画面安排。')
+            topic={**topic,'creative_brief':job['settings'].get('creative_brief',''),'visual_style':job['settings'].get('visual_style','')}
             script=generate(topic,job_id) if job['mode']=='ai' else Script.model_validate(topic['seed_script'])
             validate_evidence(script,sources)
             with db.connect() as c:
@@ -85,6 +96,9 @@ def run(job_id):
             update(job_id,'fact_check',30,'核对脚本的事实表达与原始资料。')
             verify_script(script,sources,job_id)
         update(job_id,'media',35,'准备相关图片或视频素材。')
+        selected_assets=job['settings'].get('asset_ids',[])
+        for i,scene in enumerate(script.scenes):
+            if not scene.asset_id and selected_assets:scene.asset_id=selected_assets[i%len(selected_assets)]
         if topic['kind']=='live' and 'media' not in topic and any(not scene.asset_id for scene in script.scenes):
             topic=hydrate(topic)
         assets=prepare_assets(script,topic)
@@ -112,10 +126,11 @@ def run(job_id):
 
 
 def recover():
+    from .task_store import owns_queued
     with db.connect() as c:
         interrupted=c.execute("SELECT id FROM jobs WHERE status='running'").fetchall()
         for row in interrupted:
             c.execute("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?",('上次服务退出时任务未完成；可点击重试继续。',db.now(),row['id']))
             db.event(c,row['id'],'interrupted','服务重启，保留脚本和文件，等待显式重试。')
-        queued=c.execute("SELECT id FROM jobs WHERE status='queued'").fetchall()
+        queued=[row for row in c.execute("SELECT id FROM jobs WHERE status='queued'").fetchall() if not owns_queued(c,row['id'])]
     for row in queued:executor.submit(run,row['id'])

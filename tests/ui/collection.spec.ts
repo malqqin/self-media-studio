@@ -8,6 +8,8 @@ async function isolated(page:Page){
   const state={settings:structuredClone(emptySettings),topics:[] as Topic[],events:[] as string[]};
   await page.route('**/api/settings',route=>route.fulfill({json:state.settings}));
   await page.route('**/api/topics',route=>route.fulfill({json:state.topics}));
+  await page.route('**/api/tasks',route=>route.fulfill({json:[]}));
+  await page.route('**/api/assets',route=>route.fulfill({json:[]}));
   await page.route('**/api/jobs',route=>route.fulfill({json:[]}));
   await page.route('**/api/health',route=>route.fulfill({json:{ok:true,ai_ready:false,model:null,duration_seconds:10,audio_mode:'silent',local_only:true}}));
   await page.route('**/api/source-settings',async route=>{
@@ -26,27 +28,25 @@ test('fresh homepage is empty; URL alone saves then collects and persists across
     return route.fulfill({json:{added:1,reports:[{source:'custom-test',status:'success',count:1,message:'网站：新增 1 条资料。'}]}});
   });
   await page.goto('/');
-  await expect(page.getByRole('heading',{name:'还没有选题，先配置采集网址。'})).toBeVisible();
-  await expect(page.locator('.fn-note')).toHaveCount(0);
-  await page.getByRole('button',{name:'配置采集数据'}).click();
+  await expect(page.getByRole('heading',{name:'给第一个想法起个名字。'})).toBeVisible();
+  await expect(page.locator('.task-card')).toHaveCount(0);
+  await page.getByRole('button',{name:'素材库',exact:true}).click();
   const card=page.locator('#source-settings');
   await expect(card.getByLabel('采集网址',{exact:true})).toBeVisible();
   await expect(card.getByText('科学方向',{exact:true})).toHaveCount(0);
-  await expect(page.locator('.ss-topic')).toHaveCount(0);
+  await expect(page.locator('.library-topics details')).toHaveCount(0);
   await card.getByLabel('采集网址',{exact:true}).fill('https://science.example.com/feed');
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
   await expect.poll(()=>state.events).toEqual(['save','collect']);
   await expect(card.getByRole('button',{name:'正在采集…'})).toBeDisabled();
   release!();
   await expect(card.locator('.collection-result')).toContainText('新增 1 条资料');
-  await expect(page.locator('.ss-detail h2')).toHaveText(topic.title);
-  await expect(page.getByRole('button',{name:'制作这一题'})).toBeDisabled();
-  await expect(page.getByRole('link',{name:'前往每日路线配置模型'})).toBeVisible();
+  await expect(page.locator('.library-topics summary').first()).toContainText(topic.title);
+
   await page.reload();
   await expect(card.locator('.custom-source')).toContainText('science.example.com');
-  await expect(page.locator('.ss-topic')).toHaveCount(1);
-  await page.getByRole('button',{name:'今日漫游',exact:true}).click();
-  await expect(page.locator('.fn-note')).toContainText(topic.title);
+  await expect(page.locator('.library-topics details')).toHaveCount(1);
+
   expect(state.settings.custom_sources[0]).not.toHaveProperty('category');
 });
 
@@ -60,12 +60,12 @@ test('verification failure explains browser difference and supports explicit bod
     state.topics=[{...topic,title:body.title,sources:[{...topic.sources[0],url:body.url,text:body.text}],page_data:{method:'manual',full_text:true,images:[],links:[],captured_at:'2026-09-22T00:00:00Z'}}];
     return route.fulfill({json:{added:1,topic_id:topic.id,message:'正文已导入，保留原文链接，请核对内容与素材。'}});
   });
-  await page.goto('/#topics');const card=page.locator('#source-settings');
+  await page.goto('/#materials');const card=page.locator('#source-settings');
   await card.getByLabel('采集网址',{exact:true}).fill('https://mp.weixin.qq.com/s/public-test');
   await card.getByText('更多选项 · 名称与采集方式').click();
   await card.getByLabel('采集方式',{exact:true}).selectOption('browser');
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
-  await expect(card.getByRole('alert')).toContainText('验证页');
+  await expect(page.getByRole('alert')).toContainText('验证页');
   await expect(card.getByRole('link',{name:'打开原文 ↗'})).toHaveAttribute('href','https://mp.weixin.qq.com/s/public-test');
   expect(state.settings.custom_sources[0].kind).toBe('browser');
   await card.getByRole('button',{name:'导入网页正文',exact:true}).click();
@@ -73,9 +73,8 @@ test('verification failure explains browser difference and supports explicit bod
   await card.getByLabel('原文标题',{exact:true}).fill('企业产品观察');
   await card.getByLabel('网页正文',{exact:true}).fill('这是一份从浏览器复制的企业产品介绍，描述不同公司的公开产品资料和特点。');
   await card.getByRole('button',{name:'导入正文到选题库'}).click();
-  await expect(page.locator('.ss-detail h2')).toHaveText('企业产品观察');
-  await expect(page.locator('.ss-detail')).toContainText('手动导入');
-  await page.getByText('查看已采集正文与链接').click();
+  await expect(page.locator('.library-topics summary').first()).toContainText('企业产品观察');
+  await page.locator('.library-topics summary').first().click();
   await expect(page.locator('.captured-text')).toContainText('描述不同公司的公开产品资料');
 });
 
@@ -85,13 +84,13 @@ test('failed collection retains config, shows source errors, and can retry with 
     attempts++;
     return route.fulfill({json:{added:0,reports:[{source:'custom-test',count:0,status:attempts===1?'error':'success',message:attempts===1?'网站：网络连接失败或来源无法读取':'网站：新增 0 条资料，按链接去重。'}]}});
   });
-  await page.goto('/#topics');const card=page.locator('#source-settings');
+  await page.goto('/#materials');const card=page.locator('#source-settings');
   await card.getByLabel('采集网址',{exact:true}).fill('https://science.example.com/feed');
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
-  await expect(card.getByRole('alert')).toContainText('本次采集未成功');
-  await expect(card.getByRole('alert')).toContainText('网络连接失败');
+  await expect(page.getByRole('alert')).toContainText('本次采集未成功');
+  await expect(page.getByRole('alert')).toContainText('网络连接失败');
   await expect(card.locator('.custom-source')).toContainText('science.example.com');
-  await expect(page.locator('.ss-topic')).toHaveCount(0);
+  await expect(page.locator('.library-topics details')).toHaveCount(0);
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
   await expect(card.locator('.collection-result')).toContainText('没有新内容');
   expect(attempts).toBe(2);
@@ -108,18 +107,18 @@ test('invalid configuration prevents collection; partial failure still displays 
     collects++;state.topics=[topic];
     return route.fulfill({json:{added:1,reports:[{source:'custom-test',status:'success',count:1,message:'新增 1 条资料'},{source:'nasa',status:'error',count:0,message:'NASA：网络连接失败'}]}});
   });
-  await page.goto('/#topics');const card=page.locator('#source-settings');
+  await page.goto('/#materials');const card=page.locator('#source-settings');
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
-  await expect(card.getByRole('alert')).toContainText('请先输入采集网址');
+  await expect(page.getByRole('alert')).toContainText('请先输入采集网址');
   await card.getByLabel('采集网址',{exact:true}).fill('http://127.0.0.1/private');
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
-  await expect(card.getByRole('alert')).toContainText('不能读取本机');expect(collects).toBe(0);
+  await expect(page.getByRole('alert').filter({hasText:'不能读取本机'})).toBeVisible();expect(collects).toBe(0);
   await card.getByLabel('采集网址',{exact:true}).fill('https://science.example.com/feed');
   await card.getByText('也可选择常用来源 · NASA / ESA / CERN / Nature').click();
   await card.locator('.source-builtin').filter({hasText:'NASA'}).getByRole('checkbox').check();
   await card.getByRole('button',{name:'保存并采集',exact:true}).click();
   await expect(card.locator('.collection-result')).toContainText('1 个来源未成功');
-  await expect(page.locator('.ss-topic')).toHaveCount(1);expect(collects).toBe(1);
+  await expect(page.locator('.library-topics details')).toHaveCount(1);expect(collects).toBe(1);
   await page.setViewportSize({width:390,height:844});
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

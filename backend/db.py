@@ -72,9 +72,24 @@ def init():
           id TEXT PRIMARY KEY, filename TEXT NOT NULL, media_type TEXT NOT NULL,
           rights TEXT NOT NULL, credit TEXT NOT NULL, source_url TEXT NOT NULL,
           path TEXT NOT NULL, at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS article_profiles (
+          id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS articles (
+          id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL,
+          stage TEXT NOT NULL, progress INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1, profile TEXT NOT NULL, input_data TEXT NOT NULL,
+          source_data TEXT NOT NULL, angles TEXT, outline TEXT, document TEXT, checks TEXT,
+          error TEXT, note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS article_versions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, article_id TEXT NOT NULL REFERENCES articles(id),
+          version INTEGER NOT NULL, stage TEXT NOT NULL, payload TEXT NOT NULL, at TEXT NOT NULL,
+          UNIQUE(article_id,version,stage));
+        CREATE INDEX IF NOT EXISTS articles_updated ON articles(updated_at);
         CREATE INDEX IF NOT EXISTS jobs_day ON jobs(day);
         ''')
         c.execute('INSERT OR IGNORE INTO settings VALUES (1, ?)', (dump(Settings().model_dump()),))
+        from .article_models import ArticleProfile
+        c.execute('INSERT OR IGNORE INTO article_profiles VALUES (1, ?, ?)', (dump(ArticleProfile().model_dump()), now()))
 
 
 def settings() -> Settings:
@@ -101,3 +116,19 @@ def job(row):
     for field in ('settings', 'script', 'source_data', 'artifacts', 'qa'):
         result[field] = json.loads(result[field]) if result[field] else None
     return result
+
+
+def article(row):
+    if row is None:
+        return None
+    result = dict(row)
+    for field in ('profile', 'input_data', 'source_data', 'angles', 'outline', 'document', 'checks'):
+        result[field] = json.loads(result[field]) if result[field] else None
+    return result
+
+
+def article_profile():
+    from .article_models import ArticleProfile
+    with connect() as c:
+        row = c.execute('SELECT value FROM article_profiles WHERE id=1').fetchone()
+    return ArticleProfile.model_validate_json(row['value'])

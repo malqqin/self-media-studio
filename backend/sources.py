@@ -137,12 +137,13 @@ def enabled_sources():
 
 
 def save_item(c,item,label,source_id):
-    link=item['url'];ident='feed-'+sha256(link.encode()).hexdigest()[:24]
-    source={'id':ident,'title':item['title'],'url':link,'publisher':label,'text':item['text']}
+    link=item['url'];ident='feed-'+sha256(item.get('dedup_key',link).encode()).hexdigest()[:24]
+    source={'id':ident,'title':item['title'],'url':link,'publisher':item.get('publisher') or label,'text':item['text']}
     data={'angle':item['text'][:400],'sources':[source],'source_config_id':source_id,
           'rights':'来源页图片需核对相关性、署名与使用条件',
           'evidence_status':'手动导入正文 · 待核验' if item.get('method')=='manual' else '网页正文快照' if item['full_text'] else '页面摘要 · 制作时补充正文',
-          'page_data':{'method':item.get('method','http'),'full_text':item['full_text'],'images':item.get('images',[]),'links':item.get('links',[]),'captured_at':db.now()}}
+          'page_data':{'method':item.get('method','http'),'full_text':item['full_text'],'images':item.get('images',[]),'links':item.get('links',[]),'captured_at':db.now(),
+                       **{k:item[k] for k in ('platform','heat','relevance_reason','access_note') if k in item}}}
     if item['full_text']:
         data['media']=[{'url':u,'page_url':link,'credit':label,'rights':'来源页关联图片；发布前核对图片署名与使用条件','filename':label+' 来源图片'} for u in item.get('images',[])[:5]]
     count=c.execute('INSERT OR IGNORE INTO topics VALUES (?,?,?,?,?,?,?,?,?)',
@@ -176,7 +177,7 @@ def collect():
     reports=[]
     try:
         sources=enabled_sources()
-        if not sources:raise ValueError('还没有配置采集源，请在每日选题输入网址并点击“保存并采集”。')
+        if not sources:raise ValueError('还没有配置采集源，请在素材库输入网址并点击“保存并采集”。')
         for source_config in sources:
             count=0;source_id=source_config['id'];label=source_config['name'];code=None
             try:

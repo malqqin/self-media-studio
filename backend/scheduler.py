@@ -8,6 +8,8 @@ from .ai import curate
 
 
 def tick():
+    from . import task_engine
+    task_engine.tick()
     prefs=db.settings();local=datetime.now(db.TZ);today=local.date().isoformat()
     if not prefs.schedule_enabled or local.strftime('%H:%M')<prefs.schedule_time:return
     with db.connect() as c:

@@ -1,0 +1,45 @@
+{
+  "base": {
+    "root": {"maxWidth":"680px","width":"100%","boxSizing":"border-box","margin":"0 auto","padding":"28px 22px","color":"#303a33","backgroundColor":"#ffffff","fontFamily":"Arial, 'Microsoft YaHei', sans-serif","fontSize":"16px","textAlign":"left","wordBreak":"break-word","overflowWrap":"anywhere"},
+    "title": {"fontSize":"25px","lineHeight":"1.5","fontWeight":"700","fontFamily":"inherit","margin":"0 0 22px","letterSpacing":"0.5px","color":"#263a31"},
+    "summary": {"fontSize":"14px","lineHeight":"1.9","margin":"22px 0 28px","padding":"14px 16px","color":"#55665b","backgroundColor":"#f1f5f0","borderLeft":"3px solid #64806a","whiteSpace":"pre-wrap"},
+    "heading": {"fontSize":"19px","lineHeight":"1.6","fontWeight":"700","fontFamily":"inherit","margin":"32px 0 16px","padding":"0 0 9px","color":"#35553f","borderBottom":"1px solid #dfe8df"},
+    "number": {"display":"inline-block","fontFamily":"Arial, sans-serif","fontSize":"12px","fontWeight":"700","lineHeight":"1.5","marginRight":"10px","padding":"3px 6px","color":"#52715a","backgroundColor":"#edf3ed","verticalAlign":"middle"},
+    "paragraph": {"fontSize":"16px","lineHeight":"1.95","margin":"18px 0","color":"#303a33","letterSpacing":"0.5px","whiteSpace":"pre-wrap"},
+    "closing": {"fontSize":"16px","lineHeight":"1.95","margin":"30px 0 0","padding":"22px 0 0","color":"#536257","borderTop":"1px solid #dfe8df","letterSpacing":"0.5px","whiteSpace":"pre-wrap"},
+    "figure": {"margin":"24px 0","padding":"0"},
+    "image": {"display":"block","maxWidth":"100%","height":"auto","margin":"0 auto","borderRadius":"2px"},
+    "caption": {"fontSize":"12px","lineHeight":"1.7","margin":"9px 0 0","color":"#7a817c","textAlign":"center"}
+  },
+  "templates": [
+    {
+      "id":"classic","name":"清新手记","tag":"日常 · 通用","description":"草木绿点缀，柔和摘要框，适合日常分享与知识解读。","accent":"#52715a","paper":"#ffffff","numbered":false,
+      "sample":{"title":"把日子过成自己喜欢的样子","summary":"从一件小事开始，让生活多一点从容。","heading":"给日常留一点空隙","paragraph":"一杯温水，一段不赶时间的散步，都可以成为重新感受生活的起点。","closing":"愿每个普通的日子，都有值得记下的片刻。"},"styles":{}
+    },
+    {
+      "id":"tech","name":"科技蓝图","tag":"AI · 科技","description":"深蓝标题与电光蓝细节，用清晰编号梳理技术与趋势。","accent":"#2861c2","paper":"#ffffff","numbered":true,
+      "sample":{"title":"理解 AI，从一个具体任务开始","summary":"先看它解决了什么，再判断它适合用在哪里。","heading":"把能力放回实际场景","paragraph":"整理一份会议笔记，比讨论抽象的智能更容易看清工具的价值。输入、输出与人工核对，是一次尝试的三个环节。","closing":"工具在变化，判断结果的能力始终重要。"},
+      "styles":{"title":{"color":"#15325b","borderTop":"4px solid #2861c2","paddingTop":"20px","letterSpacing":"0"},"summary":{"color":"#38527a","backgroundColor":"#eef4ff","borderLeft":"3px solid #2861c2"},"heading":{"color":"#15325b","borderBottom":"1px solid #dce6f5"},"number":{"backgroundColor":"#2861c2","color":"#ffffff","borderRadius":"3px"},"paragraph":{"color":"#344257","letterSpacing":"0"},"closing":{"color":"#38527a","borderTop":"1px solid #dce6f5"}}
+    },
+    {
+      "id":"travel","name":"山河游记","tag":"旅行 · 人文","description":"暖纸色与赭石色，居中衬线标题，给风景与故事留出呼吸。","accent":"#99603f","paper":"#fcf8f1","numbered":true,
+      "sample":{"title":"在街巷之间，慢慢认识一座城","summary":"不必把行程排满，风景也藏在转弯之后。","heading":"让脚步慢下来","paragraph":"看一看屋檐的弧度，再留意门窗与街道的关系。城市的气质，往往藏在这些容易被略过的细节里。","closing":"给下一次出发，留一点没有安排的时间。"},
+      "styles":{"root":{"backgroundColor":"#fcf8f1","fontFamily":"Georgia, 'Songti SC', SimSun, serif"},"title":{"color":"#65442f","textAlign":"center","fontWeight":"500","letterSpacing":"2px","padding":"10px 0 4px"},"summary":{"backgroundColor":"transparent","borderLeft":"0","borderTop":"1px solid #dcc9b5","borderBottom":"1px solid #dcc9b5","textAlign":"center","color":"#866b53","padding":"18px 4px"},"heading":{"color":"#805437","borderBottom":"0","padding":"0","fontWeight":"500"},"number":{"color":"#99603f","backgroundColor":"#efe2d3","borderRadius":"50%","padding":"5px 7px"},"paragraph":{"color":"#51483f","lineHeight":"2.1","letterSpacing":"1px"},"closing":{"color":"#806a57","borderTop":"1px solid #dcc9b5","fontSize":"15px"},"caption":{"color":"#917c67"}}
+    },
+    {
+      "id":"guide","name":"实用指南","tag":"教程 · 清单","description":"橙色步骤编号和重点摘要，适合操作教程、工具推荐与方法整理。","accent":"#b65b24","paper":"#ffffff","numbered":true,
+      "sample":{"title":"整理工作资料，从这一步开始","summary":"找到、归类、复用。让每份资料都能在需要时出现。","heading":"先建立一个统一入口","paragraph":"把散落的链接与笔记放在一个固定位置，再用简短标题说明它能解决什么问题。分类不必复杂，能找回来更重要。","closing":"今天就整理一个常用文件夹，试试这套方法。"},
+      "styles":{"title":{"color":"#3f352b","letterSpacing":"0"},"summary":{"color":"#815031","backgroundColor":"#fff4e8","borderLeft":"0","borderRadius":"8px","padding":"18px"},"heading":{"color":"#94491d","backgroundColor":"#fff6ec","borderBottom":"0","padding":"10px 12px","borderRadius":"4px","fontSize":"18px"},"number":{"color":"#ffffff","backgroundColor":"#b65b24","borderRadius":"4px"},"paragraph":{"color":"#403b35"},"closing":{"color":"#815031","backgroundColor":"#fff8ee","borderTop":"0","padding":"18px","borderRadius":"6px"}}
+    },
+    {
+      "id":"opinion","name":"观点专栏","tag":"评论 · 深读","description":"酒红色强调与杂志感分隔，让论点有分量，长文层次更清楚。","accent":"#91434e","paper":"#ffffff","numbered":true,
+      "sample":{"title":"信息越多，我们越需要自己的判断","summary":"读得快是一种能力，知道何时停下来也是。","heading":"从接受答案，到检查问题","paragraph":"一个结论是否可信，不只取决于它被重复了多少次。看看证据来自哪里，分清事实与解释，判断才有了落点。","closing":"给判断留一点时间，也给不同的解释留一点空间。"},
+      "styles":{"title":{"color":"#342a2c","fontFamily":"Georgia, 'Songti SC', SimSun, serif","fontSize":"27px","borderBottom":"3px solid #91434e","paddingBottom":"22px"},"summary":{"color":"#78525a","backgroundColor":"#faf3f4","borderLeft":"3px solid #91434e"},"heading":{"color":"#793641","borderBottom":"1px solid #ead8dc"},"number":{"backgroundColor":"transparent","color":"#91434e","fontSize":"20px","padding":"0","fontFamily":"Georgia, serif"},"paragraph":{"color":"#41383b","lineHeight":"2"},"closing":{"color":"#78525a","borderTop":"2px solid #91434e","fontFamily":"Georgia, 'Songti SC', SimSun, serif"}}
+    },
+    {
+      "id":"minimal","name":"极简留白","tag":"随笔 · 品牌","description":"黑白灰与充足留白，弱化装饰，把注意力交给文字。","accent":"#343434","paper":"#ffffff","numbered":false,
+      "sample":{"title":"少一点，也很好","summary":"把注意力留给真正想做的事。","heading":"重新安排注意力","paragraph":"删掉一个不再需要的提醒，关掉一个反复打开的页面。少做一点，并不意味着错过，也可能是在找回自己的节奏。","closing":"留白之后，重要的事会更清楚。"},
+      "styles":{"root":{"padding":"36px 24px"},"title":{"color":"#222222","fontSize":"26px","fontWeight":"500","letterSpacing":"1px","margin":"0 0 30px"},"summary":{"color":"#777777","backgroundColor":"transparent","borderLeft":"0","padding":"0 0 24px","borderBottom":"1px solid #e8e8e8","fontSize":"13px"},"heading":{"color":"#282828","borderBottom":"0","padding":"0","margin":"38px 0 20px","fontSize":"18px"},"paragraph":{"color":"#454545","lineHeight":"2.1","letterSpacing":"1px","margin":"22px 0"},"closing":{"color":"#777777","borderTop":"1px solid #e8e8e8","fontSize":"14px","margin":"38px 0 0"},"caption":{"color":"#888888"}}
+    }
+  ]
+}

@@ -1,4 +1,6 @@
-export type Page = 'home' | 'topics' | 'review' | 'flow';
+import type articleFormats from '../shared/article-formats.json';
+export type ArticleFormat=keyof typeof articleFormats;
+export type Page = 'home' | 'topics' | 'articles' | 'review' | 'flow';
 export interface Source { id: string; title: string; publisher: string; url: string; text: string }
 export interface Scene { heading: string; narration?: string; source_id: string; evidence: string; visual: 'orbit'|'spectrum'|'particle'|'question'; asset_id: string; clip_start: number }
 export interface Script { title: string; description: string; title_lines: string[]; scenes: Scene[] }
@@ -15,3 +17,24 @@ export interface QA { passed: boolean; duration_seconds: number; audio_present: 
 export interface Job { id: string; topic_id: string; status: 'queued'|'running'|'needs_review'|'approved'|'failed'|'changes_requested'|'draft'; stage: string; progress: number; mode: string; version: number; script: Script|null; source_data: Source[]; settings: Settings; artifacts: Record<string,string>|null; qa: QA|null; error: string|null; note: string; created_at: string; updated_at: string; events?: {id:number; stage:string;message:string;at:string}[]; manifest?: {duration:number;timeline:{scene:number;start:number;end:number}[];cues:{scene:number;start:number;end:number;text:string}[]} }
 export interface Asset { id:string;filename:string;media_type:string;rights:string;credit:string;source_url:string }
 export interface Activity { sources:{id:number;source:string;status:string;count:number;message:string;at:string}[];daily:{day:string;status:string;message:string}[];ai_calls:number;jobs_today:number }
+export type ArticleTemplateId='classic'|'tech'|'travel'|'guide'|'opinion'|'minimal';
+export interface ArticleProfile { template_id?:ArticleTemplateId;name:string;direction:string;audience:string;style:string;length:number;format:ArticleFormat;preferences:string }
+export interface ArticleEvidence { source_id:string;quote:string }
+export interface ArticleSection { heading:string;paragraphs:string[];evidence:ArticleEvidence[];image_hint:string;asset_id:string;caption:string }
+export interface ArticleDocument { template_id?:ArticleTemplateId;title:string;titles:string[];summary:string;opening:string;sections:ArticleSection[];closing:string;cover_hint:string;cover_asset_id:string }
+export interface ArticleAngle { title:string;angle:string;reason:string }
+export interface ArticleOutline { title:string;angle:string;sections:{heading:string;points:string}[];source_gaps:string[] }
+export interface Article { id:string;request_id:string;status:string;stage:string;progress:number;mode:'original'|'reference';version:number;profile:ArticleProfile;input_data:Record<string,unknown>;source_data:(Source&{full_text?:boolean;method?:string})[];angles:{choices:ArticleAngle[]}|null;outline:ArticleOutline|null;document:ArticleDocument|null;checks:{issues:{severity:'warning'|'error';section:number;message:string}[];note:string}|null;error:string|null;note:string;created_at:string;updated_at:string;versions?:{version:number;stage:string;at:string;note:string;restorable:boolean}[] }
+export interface ArticleSummary { id:string;title:string;status:string;stage:string;progress:number;version:number;updated_at:string }
+export interface SavedModel extends ModelConnection { id:string }
+export interface WeChatAccount { channel?:'api'|'browser';subject?:'unknown'|'personal'|'organization';session_saved?:boolean; id:string;name:string;appid:string;secret_configured:boolean;checked_at:string|null;draft_ready:boolean;publish_ready:boolean }
+export type CreationKind='video'|'article'|'image';
+export interface MaterialSettings { mode:'original'|'reference';discover:boolean;query:string;urls:string[];topic_ids:string[];notes:string;search_scope?:'web'|'wechat';max_age_days?:0|7|30|90|365;reference_style?:'facts'|'structure'|'tone' }
+export interface ImageSettings { format:'poster'|'carousel';ratio:'portrait'|'square'|'landscape';theme:'forest'|'paper'|'night';count:number;style:string;asset_id:string }
+export interface TaskSettings { model_id:string;execution:'manual'|'automatic';schedule:{time:string;weekdays:number[]};brief:string;materials:MaterialSettings;article:ArticleProfile;article_plan?:{mode:'fixed'|'direction';avoid_days:number};wechat_delivery?:{mode:'local'|'handoff'|'draft'|'publish';account_id:string;cover_asset_id:string;author:string};video:{resolution:'720p'|'1080p';visual_style:string;asset_ids:string[]};image:ImageSettings }
+export interface CollectedItem { topic_id:string;title:string;url:string;summary:string;full_text:boolean;publisher?:string;published_at?:string|null;platform?:string;heat?:string;relevance_reason?:string;access_note?:string }
+export interface CollectionReport {source:string;status:string;message:string;count:number;items?:CollectedItem[];query?:string;required_terms?:string[];search_url?:string;candidate_count?:number;excluded?:{title:string;reason:string;url?:string;published_at?:string|null;publisher?:string;stage?:'date'|'relevance'}[];heat_note?:string;collected_at?:string;date_filter?:{max_age_days:number;from:string|null;to:string};date_excluded_count?:number;relevance_excluded_count?:number;deferred_count?:number;unprocessed_count?:number;pages_searched?:number;search_note?:string}
+export interface TaskRun { id:string;task_id:string;action:string;status:string;stage:string;content_id:string|null;error:string|null;reports:CollectionReport[];publication?:{mode:string;status:string;error:string|null;updated_at:string;account_name?:string;appid?:string;article_version?:number;title?:string;media_id?:string;publish_id?:string;article_url?:string;can_retry?:boolean}|null;settings:TaskSettings&{_used_topic_ids?:string[];_editorial_plan?:{subject:string;brief:string;query:string;required_terms:string[];date:string;recent_titles:string[]}};created_at:string;updated_at:string }
+export interface CreationTask { deleted_at?:string|null;is_running?:boolean;id:string;name:string;kind:CreationKind;version:number;settings:TaskSettings;archived:boolean;created_at:string;updated_at:string;latest_run?:TaskRun|null;run_count?:number;runs?:TaskRun[];topics?:Topic[] }
+export interface ImageDocument { title:string;cards:{heading:string;body:string;footer:string}[] }
+export interface ImageJob { id:string;version:number;status:string;document:ImageDocument;settings:ImageSettings;source_data:Source[];files:string[]|null;error:string|null }

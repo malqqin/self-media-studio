@@ -1,0 +1,22 @@
+import {useEffect,useState} from 'react';
+import {Check,KeyRound,Plus,Save,FlaskConical,LoaderCircle} from 'lucide-react';
+import {api,send} from './api';
+import type {SavedModel} from './types';
+
+const blank:SavedModel={id:'',name:'',base_url:'https://api.openai.com/v1',model:'',protocol:'chat_completions',output_mode:'json_object',key_configured:false,ready:false,origin:'library'};
+export default function ModelsPage({onError,onNotice}:{onError:(s:string)=>void;onNotice:(s:string)=>void}){
+  const [models,setModels]=useState<SavedModel[]>([]),[draft,setDraft]=useState<SavedModel|null>(null),[key,setKey]=useState(''),[clear,setClear]=useState(false),[busy,setBusy]=useState('');
+  const refresh=async()=>setModels(await api<SavedModel[]>('/models'));
+  useEffect(()=>{refresh().catch(e=>onError(e.message));},[]);
+  const choose=(model:SavedModel)=>{setDraft({...model});setKey('');setClear(false);};
+  const act=async(test=false)=>{if(!draft)return;setBusy(test?'test':'save');try{
+    const body={name:draft.name||'我的模型',base_url:draft.base_url,model:draft.model,protocol:draft.protocol,output_mode:draft.output_mode,api_key:key,clear_key:clear};
+    const path=draft.id?`/models/${draft.id}`:'/models';
+    if(test){const result=await api<{message:string}>(path+'/test',send('POST',body));onNotice(result.message);}
+    else{const saved=await api<SavedModel>(path,send(draft.id?'PUT':'POST',body));choose(saved);await refresh();onNotice('模型已保存，可在各个任务中选择。');}
+  }catch(e){onError((e as Error).message);}finally{setBusy('');}};
+  return <section><div className="platform-heading"><div><span className="fn-label">MODEL LIBRARY</span><h1>我的模型</h1><p>一次配置，在文章、视频和图片任务中按需选择。</p></div><button className="ss-btn ss-primary" onClick={()=>choose(blank)}><Plus/>添加模型</button></div>
+    <div className="model-library-grid"><div className="model-list">{models.map(m=><button className="model-card" aria-pressed={draft?.id===m.id} key={m.id} onClick={()=>choose(m)}><span className="model-symbol"><KeyRound/></span><span><strong>{m.name}</strong><small>{m.model||'未填写模型名称'}</small><small>{m.base_url}</small></span><span className={'ss-badge '+(m.ready?'ss-green':'ss-amber')}>{m.ready?'可使用':'待配置'}</span></button>)}<p className="inline-hint">原有连接保留为默认模型。每个任务分别选择模型，互不覆盖。</p></div>
+    {draft?<section className="connection-card"><h2>{draft.id?'编辑模型':'添加模型'}</h2><form onSubmit={e=>{e.preventDefault();act();}}><fieldset className="article-fields" disabled={!!busy}><label className="field">连接名称<input required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})} placeholder="例如：日常写作、深度分析"/></label><label className="field">API 地址<input type="url" required maxLength={2000} value={draft.base_url} onChange={e=>setDraft({...draft,base_url:e.target.value})}/></label><label className="field">模型名称<input required maxLength={150} value={draft.model} onChange={e=>setDraft({...draft,model:e.target.value})}/></label><div className="field-pair"><label className="field">接口协议<select value={draft.protocol} onChange={e=>setDraft({...draft,protocol:e.target.value as SavedModel['protocol']})}><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option></select></label><label className="field">输出格式<select value={draft.output_mode} onChange={e=>setDraft({...draft,output_mode:e.target.value as SavedModel['output_mode']})}><option value="json_object">JSON 模式</option><option value="json_schema">JSON Schema</option><option value="text">普通文本 JSON</option></select></label></div><label className="field">API Key<input type="password" autoComplete="new-password" value={key} disabled={clear} onChange={e=>setKey(e.target.value)} placeholder={draft.key_configured?'已保存，留空保留':'输入模型服务商的密钥'}/></label>{draft.key_configured&&<label className="ss-check"><input type="checkbox" checked={clear} onChange={e=>{setClear(e.target.checked);setKey('');}}/>清除已保存密钥</label>}<p className="inline-hint">密钥只保存在本机。测试连接会产生一次模型请求，可能产生少量费用。</p><div className="article-actions"><button type="button" className="ss-btn" onClick={()=>act(true)} disabled={!draft.model||clear}>{busy==='test'?<LoaderCircle className="spin"/>:<FlaskConical/>}测试连接</button><button type="submit" className="ss-btn ss-primary">{busy==='save'?<LoaderCircle className="spin"/>:<Save/>}保存模型</button></div></fieldset></form></section>:<div className="model-empty"><Check/><h2>让合适的模型，做擅长的事。</h2><p>选中一个连接，或添加新的模型服务。</p></div>}</div>
+  </section>;
+}

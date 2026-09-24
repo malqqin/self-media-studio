@@ -1,0 +1,174 @@
+"""Task definitions and immutable execution snapshots sit above individual media jobs."""
+import json
+import uuid
+import threading
+from contextlib import contextmanager
+from fastapi import HTTPException
+from . import db
+from .task_models import TaskSettings
+
+collection_lock=threading.RLock()
+collecting=set()
+
+
+@contextmanager
+def collection(ident,version):
+    with collection_lock:
+        with db.connect() as c:task=require(c,ident,version)
+        if ident in collecting:raise HTTPException(409,'任务正在采集资料，请等待完成。')
+        collecting.add(ident)
+    try:yield task
+    finally:
+        with collection_lock:collecting.discard(ident)
+
+
+def init():
+    with db.connect() as c:
+        c.executescript('''
+        CREATE TABLE IF NOT EXISTS creation_tasks (
+          id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1, settings TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES creation_tasks(id), request_id TEXT UNIQUE NOT NULL,
+          schedule_slot TEXT, action TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, settings TEXT NOT NULL,
+          content_id TEXT, error TEXT, reports TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(task_id,schedule_slot));
+        CREATE TABLE IF NOT EXISTS task_sources (
+          task_id TEXT NOT NULL REFERENCES creation_tasks(id), topic_id TEXT NOT NULL REFERENCES topics(id),
+          at TEXT NOT NULL, PRIMARY KEY(task_id,topic_id));
+        CREATE TABLE IF NOT EXISTS deleted_tasks (
+          task_id TEXT PRIMARY KEY REFERENCES creation_tasks(id), deleted_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS image_jobs (
+          id TEXT PRIMARY KEY, version INTEGER NOT NULL, status TEXT NOT NULL, document TEXT NOT NULL,
+          settings TEXT NOT NULL, source_data TEXT NOT NULL, files TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS platform_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS task_runs_task ON task_runs(task_id,created_at);
+        ''')
+        from . import wechat_delivery
+        wechat_delivery.init(c)
+        # Existing creations appear on the task homepage. No content is moved or regenerated.
+        for kind,table,column in [('article','articles','document'),('video','jobs','script')]:
+            rows=c.execute(f'SELECT * FROM {table} WHERE id NOT IN (SELECT content_id FROM task_runs WHERE content_id IS NOT NULL)').fetchall()
+            for row in rows:
+                ident='task-'+uuid.uuid4().hex[:16];settings=TaskSettings()
+                doc=json.loads(row[column] or 'null') or {}
+                name=doc.get('title') or ('历史文章' if kind=='article' else '历史视频')
+                if kind=='article':
+                    from .article_models import ArticleProfile
+                    settings.article=ArticleProfile.model_validate_json(row['profile'])
+                    inp=json.loads(row['input_data']);settings.brief=inp.get('brief','')
+                    settings.model_id=inp.get('_model_id','default')
+                    settings.materials.notes=inp.get('notes','')
+                    settings.materials.topic_ids=inp.get('topic_ids',[])
+                    settings.materials.mode=inp.get('mode','original')
+                else:
+                    settings.materials.mode='reference';settings.materials.topic_ids=[row['topic_id']]
+                    settings.video.resolution=json.loads(row['settings']).get('resolution','1080p')
+                c.execute('INSERT INTO creation_tasks VALUES (?,?,?,?,?,?,?,?,?)',(ident,'import-'+row['id'],name[:80],kind,1,settings.model_dump_json(),0,row['created_at'],row['updated_at']))
+                c.execute('INSERT INTO task_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                          ('run-'+uuid.uuid4().hex[:16],ident,'import-'+row['id'],None,'assist','ready','content',settings.model_dump_json(),row['id'],None,'[]',row['created_at'],row['updated_at']))
+        if not c.execute("SELECT 1 FROM platform_meta WHERE key='legacy-schedule'").fetchone():
+            old=db.settings()
+            if old.schedule_enabled:
+                settings=TaskSettings(execution='automatic');settings.schedule.time=old.schedule_time
+                settings.materials.mode='reference'
+                from .sources import FEEDS
+                settings.materials.urls=[FEEDS[x]['url'] for x in old.sources]+[x.url for x in old.custom_sources if x.enabled]
+                settings.materials.urls=settings.materials.urls[:10]
+                ident='task-'+uuid.uuid4().hex[:16]
+                c.execute('INSERT INTO creation_tasks VALUES (?,?,?,?,?,?,?,?,?)',(ident,'legacy-schedule','原视频自动计划','video',1,settings.model_dump_json(),0,db.now(),db.now()))
+                old.schedule_enabled=False
+                c.execute('UPDATE settings SET value=? WHERE id=1',(old.model_dump_json(),))
+            c.execute("INSERT INTO platform_meta VALUES ('legacy-schedule','migrated')")
+
+
+def decode(row):
+    if not row:return None
+    value=dict(row);value['settings']=json.loads(value['settings'])
+    return value
+
+
+def require(c, ident, version=None, *, include_deleted=False):
+    value=decode(c.execute('SELECT * FROM creation_tasks WHERE id=?',(ident,)).fetchone())
+    if not value:raise HTTPException(404,'创作任务不存在。')
+    deleted=c.execute('SELECT deleted_at FROM deleted_tasks WHERE task_id=?',(ident,)).fetchone()
+    if deleted and not include_deleted:raise HTTPException(404,'任务已删除，可到任务列表的回收站恢复。')
+    value['deleted_at']=deleted['deleted_at'] if deleted else None
+    if version is not None and version!=value['version']:raise HTTPException(409,'任务配置已更新，请刷新后再操作。')
+    return value
+
+
+def content_status(c, task_kind, run):
+    if not run['content_id']:return run
+    table={'article':'articles','video':'jobs','image':'image_jobs'}[task_kind]
+    content=c.execute(f'SELECT status,error FROM {table} WHERE id=?',(run['content_id'],)).fetchone()
+    # Orchestration stays active while it is advancing an automatic workflow.
+    if content and run['status'] not in ('queued','running') and run['stage']=='content':
+        run['status']=content['status']
+        run['error']=content['error']
+    return run
+
+
+def runs(c, task):
+    from . import wechat_delivery
+    values=[]
+    for row in c.execute('SELECT * FROM task_runs WHERE task_id=? ORDER BY created_at DESC,id DESC',(task['id'],)):
+        value=decode(row);value['reports']=json.loads(value['reports'] or '[]')
+        value['publication']=wechat_delivery.public(wechat_delivery.get(value['id'],c))
+        values.append(content_status(c,task['kind'],value))
+    return values
+
+
+def active(task,history):
+    return task['id'] in collecting or any(r['status'] in ('queued','running','publishing') or (task['kind']=='image' and r['status']=='draft') for r in history)
+
+
+def detail(ident):
+    with db.connect() as c:
+        value=require(c,ident);value['runs']=runs(c,value)
+        value['is_running']=active(value,value['runs'])
+        value['topics']=[db.topic(row) for row in c.execute('SELECT t.* FROM topics t JOIN task_sources s ON s.topic_id=t.id WHERE s.task_id=? ORDER BY s.at DESC LIMIT 100',(ident,))]
+    return value
+
+
+def listing(deleted=False):
+    with db.connect() as c:
+        result=[]
+        for row in c.execute('''SELECT t.*,d.deleted_at FROM creation_tasks t LEFT JOIN deleted_tasks d ON d.task_id=t.id
+                              WHERE (d.task_id IS NOT NULL)=? ORDER BY COALESCE(d.deleted_at,t.created_at) DESC,t.id DESC''',(deleted,)).fetchall():
+            value=decode(row);history=runs(c,value);value['latest_run']=history[0] if history else None
+            value['is_running']=active(value,history)
+            value['run_count']=c.execute('SELECT count(*) FROM task_runs WHERE task_id=?',(value['id'],)).fetchone()[0]
+            result.append(value)
+    return result
+
+
+def delete(ident,version):
+    # Keep content ownership and publication records intact; startup migration
+    # must not re-import a deleted task's media as a new task.
+    with collection_lock,db.connect() as c:
+        c.execute('BEGIN IMMEDIATE');task=require(c,ident,version)
+        if ident in collecting:raise HTTPException(409,'任务正在采集资料，请等待完成后再删除。')
+        if active(task,runs(c,task)):
+            raise HTTPException(409,'任务正在生成或发布，请等待完成后再删除。')
+        now=db.now()
+        c.execute('INSERT INTO deleted_tasks VALUES (?,?)',(ident,now))
+        c.execute('UPDATE creation_tasks SET archived=1,version=version+1,updated_at=? WHERE id=?',(now,ident))
+    return {'id':ident,'deleted_at':now,'message':'任务已移入回收站，定时执行已停止。'}
+
+
+def restore(ident,version):
+    with db.connect() as c:
+        c.execute('BEGIN IMMEDIATE');task=require(c,ident,version,include_deleted=True)
+        if not task['deleted_at']:raise HTTPException(409,'任务不在回收站中。')
+        c.execute('DELETE FROM deleted_tasks WHERE task_id=?',(ident,))
+        # Restore into archive so an overdue schedule cannot fire immediately.
+        c.execute('UPDATE creation_tasks SET archived=1,version=version+1,updated_at=? WHERE id=?',(db.now(),ident))
+    return detail(ident)
+
+
+def owns_queued(c, content_id):
+    """The task orchestrator, rather than media recovery, advances its own queue."""
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'").fetchone():return False
+    return bool(c.execute("SELECT 1 FROM task_runs WHERE content_id=? AND status IN ('queued','running')",(content_id,)).fetchone())

@@ -1,14 +1,16 @@
+import {useOutcomeNotice,useNotifications} from './Notifications';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, CheckCircle2, Clapperboard, Download, ExternalLink, FilePenLine, LoaderCircle, Play, RotateCcw, Save, Upload, X } from 'lucide-react';
 import { api, dateText, fileUrl, send, timeText } from './api';
 import type { Asset, Job, Script } from './types';
 import { statuses } from './App';
 
-interface Props {jobs:Job[];selectedId:string;onSelect:(id:string)=>void;onRefresh:()=>Promise<unknown>;onError:(e:string)=>void;onNotice:(e:string)=>void;onExplore:()=>void}
-export default function ReviewPage({jobs,selectedId,onSelect,onRefresh,onError,onNotice,onExplore}:Props){
+interface Props {jobs:Job[];selectedId:string;onSelect:(id:string)=>void;onRefresh:()=>Promise<unknown>;onError:(e:string)=>void;onNotice:(e:string)=>void;onExplore:()=>void;onDirty?:(v:boolean)=>void}
+export default function ReviewPage({jobs,selectedId,onSelect,onRefresh,onError,onNotice,onExplore,onDirty}:Props){
   const active=jobs.find(j=>j.id===selectedId)||jobs[0];
   const [detail,setDetail]=useState<Job|null>(null),[busy,setBusy]=useState(false),[editing,setEditing]=useState(false);
   const [facts,setFacts]=useState(false),[rights,setRights]=useState(false),[note,setNote]=useState(''),[scene,setScene]=useState(0);
+  useEffect(()=>{onDirty?.(editing);return()=>onDirty?.(false);},[editing,onDirty]);
   const player=useRef<HTMLVideoElement>(null);
   const load=async()=>{if(active){const value=await api<Job>(`/jobs/${active.id}`);setDetail(value);return value;}};
   useEffect(()=>{let valid=true;if(active)api<Job>(`/jobs/${active.id}`).then(d=>{if(valid)setDetail(d);}).catch(e=>onError(e.message));else setDetail(null);return()=>{valid=false;};},[active?.id,active?.updated_at]);
@@ -16,13 +18,14 @@ export default function ReviewPage({jobs,selectedId,onSelect,onRefresh,onError,o
   const job=detail?.id===active?.id?detail:active;
   const act=async(path:string,body?:unknown)=>{setBusy(true);try{await api(`/jobs/${job.id}/${path}`,send('POST',body));await onRefresh();await load();onNotice(path==='review'?'审核结果已保存。':'任务已加入制作队列。');}catch(e){onError((e as Error).message);}finally{setBusy(false);}};
   const seek=(index:number)=>{setScene(index);const start=job.manifest?.timeline[index]?.start;if(player.current&&start!==undefined){player.current.currentTime=start;}};
+  const showOutcomeError=useOutcomeNotice(job?.id||'',job?.status,job?.error,job?.updated_at,'视频已生成，可以预览与审核。');
   const playing=job?.status==='running'||job?.status==='queued';
   const canReview=job?.status==='needs_review'||job?.status==='approved';
   return <section><div className="ss-heading"><div><div className="ss-eyebrow">THE SCREENING ROOM / 成片放映室</div><h1>故事成片，等你过目。</h1><p>十秒画面，一两句标题。检查内容与出处，再把成片带走。</p></div><span className="ss-badge">{jobs.length} 个制作任务</span></div>
     {!job?<div className="empty"><Clapperboard/><h2>第一场放映，从一个选题开始。</h2><p>图片或视频组成的 10 秒短片，会在这里等你。</p><button className="ss-btn ss-primary" onClick={onExplore}>去选一题 <ArrowRight/></button></div>:<>
       <div className="job-picker"><label htmlFor="job-select">制作手记</label><select id="job-select" value={job.id} onChange={e=>onSelect(e.target.value)}>{jobs.map(j=><option key={j.id} value={j.id}>{j.script?.title||j.topic_id} · {statuses[j.status]}</option>)}</select><span>第 {job.version} 版</span></div>
       {playing&&<div className="production-progress" role="status"><div><LoaderCircle className="spin"/><strong>{job.note||'准备开始制作…'}</strong><span>{job.progress}%</span></div><progress value={job.progress} max="100"/><p>可切换到其他页面；任务在本地后台执行。</p></div>}
-      {job.error&&<div className="message error"><span>{job.error}</span></div>}
+      {job.error&&<button className="text-button error-detail-button" onClick={showOutcomeError}>查看视频制作失败原因</button>}
       <div className="ss-review"><div className="ss-review-player">{job.artifacts?.video?<video ref={player} key={`${job.id}-${job.version}`} className="real-video" controls preload="metadata" poster={fileUrl(job.id,'cover',job.version)} src={fileUrl(job.id,'video',job.version)} onTimeUpdate={()=>{const time=player.current?.currentTime||0;const index=job.manifest?.timeline.findIndex(t=>time>=t.start&&time<t.end);if(index!==undefined&&index>=0)setScene(index);}}/>:<div className="video-empty"><BirdMark/><span>{playing?'好故事，正在路上。':'还没有这一版的成片。'}</span><small>9:16 · 10 秒 · 无配音</small></div>}
         <div className="video-meta"><span>{job.qa?timeText(job.qa.duration_seconds):'10 秒'}</span><span>{job.settings.resolution} · 竖屏</span></div>
         {job.artifacts&&<div className="file-links">{job.artifacts.subtitle&&<a href={fileUrl(job.id,'subtitle',job.version)}><Download/>旧版字幕</a>}<a href={fileUrl(job.id,'script',job.version)}><Download/>文案</a><a href={fileUrl(job.id,'manifest',job.version)}><ExternalLink/>出处清单</a></div>}
@@ -42,7 +45,7 @@ function BirdMark(){return <span className="bird-mark">知</span>;}
 
 function ScriptEditor({job,onClose,onSaved,onError}:{job:Job;onClose:()=>void;onSaved:()=>Promise<void>;onError:(s:string)=>void}){
   const [script,setScript]=useState<Script>(()=>({...structuredClone(job.script!),title_lines:job.script!.title_lines||[job.script!.title.slice(0,28)],scenes:job.script!.scenes.slice(0,5).map(s=>({...s,clip_start:s.clip_start||0}))}));
-  const [assets,setAssets]=useState<Asset[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [assets,setAssets]=useState<Asset[]>([]),[busy,setBusy]=useState(false);const {error:setError}=useNotifications();
   const [rights,setRights]=useState(''),[credit,setCredit]=useState('');
   useEffect(()=>{
     const previous=document.activeElement as HTMLElement|null;
@@ -66,7 +69,7 @@ function ScriptEditor({job,onClose,onSaved,onError}:{job:Job;onClose:()=>void;on
   const patch=(index:number,field:string,value:string|number)=>setScript(s=>({...s,scenes:s.scenes.map((scene,i)=>i===index?{...scene,[field]:value}:scene)}));
   const move=(i:number,delta:number)=>setScript(s=>{const scenes=[...s.scenes];[scenes[i],scenes[i+delta]]=[scenes[i+delta],scenes[i]];return {...s,scenes};});
   return <div className="editor-overlay"><section className="editor" role="dialog" aria-modal="true" aria-labelledby="editor-title"><div className="editor-heading"><div><span className="fn-label">TEN SECOND STORY</span><h2 id="editor-title">十秒，也可以很精彩。</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭编辑" disabled={busy}><X/></button></div>
-    <p className="inline-hint">1–2 句短标题贯穿全片，1–5 个画面平分 10 秒，不生成配音。保存会生成新版本，需重新制作和审核。</p>{error&&<p className="message error" role="alert">{error}</p>}
+    <p className="inline-hint">1–2 句短标题贯穿全片，1–5 个画面平分 10 秒，不生成配音。保存会生成新版本，需重新制作和审核。</p>
     <label className="field">视频标题<input value={script.title} maxLength={60} onChange={e=>setScript(s=>({...s,title:e.target.value}))}/></label>
     <div className="title-editor">{script.title_lines.map((line,i)=><label className="field" key={i}>画面标题 {i+1}<div className="title-input"><input value={line} maxLength={28} onChange={e=>setScript(s=>({...s,title_lines:s.title_lines.map((v,n)=>n===i?e.target.value:v)}))}/>{i===1&&<button className="text-button" onClick={()=>setScript(s=>({...s,title_lines:s.title_lines.slice(0,1)}))}>移除</button>}</div><small>{line.length} / 28 字</small></label>)}{script.title_lines.length===1&&<button className="text-button" onClick={()=>setScript(s=>({...s,title_lines:[...s.title_lines,'']}))}>+ 添加第二句标题</button>}</div>
     {script.scenes.map((scene,i)=>{const asset=assets.find(a=>a.id===scene.asset_id);return <fieldset className="scene-editor" key={i}><legend>画面 {i+1} · 约 {(10/script.scenes.length).toFixed(1)} 秒</legend><div className="scene-tools"><button className="text-button" disabled={i===0} onClick={()=>move(i,-1)}>上移</button><button className="text-button" disabled={i===script.scenes.length-1} onClick={()=>move(i,1)}>下移</button><button className="text-button" disabled={script.scenes.length===1} onClick={()=>setScript(s=>({...s,scenes:s.scenes.filter((_,n)=>n!==i)}))}>删除画面</button></div>

@@ -16,6 +16,10 @@ from . import model_config
 from .ai import test_connection
 from .scheduler import tick
 from .media import MAX_UPLOAD, store_asset, asset_path
+from .article_routes import router as article_router
+from . import article_worker
+from .platform_routes import router as platform_router
+from . import task_store, task_engine
 
 async def scheduler_loop(stop: asyncio.Event):
     while not stop.is_set():
@@ -27,15 +31,19 @@ async def scheduler_loop(stop: asyncio.Event):
 
 @asynccontextmanager
 async def lifespan(app):
-    db.init();worker.recover();stop=asyncio.Event()
+    db.init();task_store.init();worker.recover();article_worker.recover();task_engine.recover();stop=asyncio.Event()
     with db.connect() as c:
         c.execute("UPDATE daily_runs SET status='attention',message=? WHERE status='running'",('采集期间服务中断；请手动采集并选择制作。',))
     task=asyncio.create_task(scheduler_loop(stop))
     yield
     stop.set();await task
+    from . import wechat_browser
+    wechat_browser.shutdown()
 
 
-app=FastAPI(title='知序 · 科学漫游编辑部',lifespan=lifespan)
+app=FastAPI(title='知序 · 自媒体创作平台',lifespan=lifespan)
+app.include_router(article_router)
+app.include_router(platform_router)
 
 
 @app.middleware('http')
@@ -110,7 +118,7 @@ def settings_get():return db.settings()
 @app.put('/api/settings')
 def settings_update(settings: Settings):
     if settings.schedule_enabled:
-        if not (settings.sources or any(s.enabled for s in settings.custom_sources)):raise ValueError('请先在每日选题配置并启用采集源，再开启每日计划。')
+        if not (settings.sources or any(s.enabled for s in settings.custom_sources)):raise ValueError('请先在素材库配置并启用采集源，再开启每日计划。')
         if not config.ai_ready():raise ValueError('尚未配置 AI 密钥与模型，不能启用每日自动制作。')
     with db.connect() as c:c.execute('UPDATE settings SET value=? WHERE id=1',(settings.model_dump_json(),))
     return settings

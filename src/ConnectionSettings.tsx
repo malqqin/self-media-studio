@@ -1,12 +1,13 @@
+import {useNotifications} from './Notifications';
 import {useEffect,useState} from 'react';
-import {CheckCircle2,FlaskConical,KeyRound,LoaderCircle,Plus,Radio,RefreshCw,Save,Trash2,X} from 'lucide-react';
+import {FlaskConical,KeyRound,LoaderCircle,Plus,Radio,RefreshCw,Save,Trash2,X} from 'lucide-react';
 import {api,send} from './api';
 import './connections.css';
 import type {BuiltinSource,CollectionResult,CollectionSource,ModelConnection,Settings,SourceCatalog,SourcePreview} from './types';
 
 export function ModelSettings({onChanged}:{onChanged:()=>Promise<unknown>}){
   const [saved,setSaved]=useState<ModelConnection|null>(null),[draft,setDraft]=useState<ModelConnection|null>(null);
-  const [key,setKey]=useState(''),[clearKey,setClearKey]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [key,setKey]=useState(''),[clearKey,setClearKey]=useState(false),[busy,setBusy]=useState('');const {error:setError,success:setNotice}=useNotifications();
   useEffect(()=>{api<ModelConnection>('/model-config').then(v=>{setDraft(v);setSaved(v);}).catch(e=>setError(e.message));},[]);
   const patch=(field:string,value:string)=>{setDraft(s=>s?{...s,[field]:value}:s);setNotice('');};
   const act=async(test=false)=>{
@@ -19,7 +20,7 @@ export function ModelSettings({onChanged}:{onChanged:()=>Promise<unknown>}){
   };
   return <section className="connection-card" id="model-settings"><div className="connection-heading"><span className="connection-icon"><KeyRound/></span><div><span className="fn-label">MODEL CONNECTION</span><h2>AI 模型连接</h2></div><span className={`ss-badge ${saved?.ready?'ss-green':'ss-amber'}`}>{saved?.ready?'已配置':'待配置'}</span></div>
     <p className="connection-description">连接你的模型服务或中转站，用于筛选选题、写短标题与事实复核。</p>
-    {error&&<p className="message error" role="alert">{error}</p>}{notice&&<p className="message" role="status"><CheckCircle2/>{notice}</p>}
+
     {!draft?<p className="inline-hint">正在读取配置…</p>:<form onSubmit={e=>{e.preventDefault();act();}}><fieldset disabled={!!busy} className="connection-fields">
       <div className="connection-presets"><button type="button" onClick={()=>{patch('name','OpenAI');patch('base_url','https://api.openai.com/v1');patch('protocol','responses');patch('output_mode','json_schema');}}>OpenAI 官方</button><button type="button" onClick={()=>{patch('name','自定义中转站');patch('protocol','chat_completions');patch('output_mode','json_object');}}>自定义 / 中转站</button></div>
       <label className="field">连接名称<input value={draft.name} maxLength={60} required onChange={e=>patch('name',e.target.value)} placeholder="例如：我的中转站"/></label>
@@ -40,7 +41,7 @@ export function SourceSettings({settings,onSaved,onCollected}:{settings:Settings
   const [importUrl,setImportUrl]=useState(''),[importTitle,setImportTitle]=useState(''),[importText,setImportText]=useState(''),[showImport,setShowImport]=useState(false);
   const [catalog,setCatalog]=useState<SourceCatalog[]>([]),[selected,setSelected]=useState<BuiltinSource[]>(settings.sources),[custom,setCustom]=useState<CollectionSource[]>(settings.custom_sources||[]);
   const [editor,setEditor]=useState<CollectionSource|null>(()=>settings.sources.length||settings.custom_sources.some(s=>s.enabled)?null:newSource());
-  const [preview,setPreview]=useState<SourcePreview|null>(null),[result,setResult]=useState<CollectionResult|null>(null),[busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [preview,setPreview]=useState<SourcePreview|null>(null),[result,setResult]=useState<CollectionResult|null>(null),[busy,setBusy]=useState('');const {error:setError,success:setNotice}=useNotifications();
   useEffect(()=>{api<SourceCatalog[]>('/source-catalog').then(setCatalog).catch(e=>setError(e.message));},[]);
   const sourceStamp=JSON.stringify([settings.sources,settings.custom_sources]);
   useEffect(()=>{setSelected(settings.sources);setCustom(settings.custom_sources||[]);},[sourceStamp]);
@@ -64,9 +65,8 @@ export function SourceSettings({settings,onSaved,onCollected}:{settings:Settings
       const saved=await api<Settings>('/source-settings',send('PUT',{sources:selected,custom_sources:next}));
       persisted=true;onSaved(saved);setCustom(saved.custom_sources);setEditor(null);setPreview(null);
       if(!collect){setNotice('采集配置已保存，立即生效。'+(!saved.sources.length&&!saved.custom_sources.some(s=>s.enabled)?'当前没有启用来源，每日计划已关闭。':''));return;}
-      setNotice('配置已保存，正在读取网页；必要时会启动浏览器加载，请稍候…');
       const collected=await api<CollectionResult>('/collect',send('POST'));
-      setResult(collected);setNotice('');
+      setResult(collected);const failed=collected.reports.filter(r=>r.status==='error');if(failed.length)setError((failed.length===collected.reports.length?'本次采集未成功。':'部分来源采集失败。')+failed.map(r=>r.message).join('；'));else setNotice(`采集完成，新增 ${collected.added} 条资料。`);
       try{await onCollected();}catch{setError('采集已结束，但选题列表刷新失败，请刷新页面查看。');}
     }catch(e){setNotice('');setError((persisted?'配置已保存，可再次点击重试。':'')+(e as Error).message);}finally{setBusy('');}
   };
@@ -80,7 +80,7 @@ export function SourceSettings({settings,onSaved,onCollected}:{settings:Settings
   const failures=result?.reports.filter(r=>r.status==='error').length||0;
   return <section className="connection-card" id="source-settings"><div className="connection-heading"><span className="connection-icon"><Radio/></span><div><span className="fn-label">COLLECT FROM THE WEB</span><h2>采集数据配置</h2></div><span className="ss-badge">{selected.length+custom.filter(s=>s.enabled).length} 个启用</span></div>
     <p className="connection-description">输入任意领域的网页、公众号文章或订阅地址，保存后立即采集，无需选择分类或配置 AI。</p>
-    {error&&<p className="message error" role="alert">{error}</p>}{notice&&<p className="message" role="status">{notice}</p>}
+
     <form onSubmit={e=>{e.preventDefault();save(true);}}><fieldset disabled={!!busy} className="connection-fields">
     {editor&&<div className="source-editor"><div className="source-editor-heading"><h3>{custom.some(s=>s.id===editor.id)?'编辑采集网址':'从一个网址开始'}</h3><button type="button" className="icon-button" onClick={()=>{setEditor(null);setPreview(null);}} aria-label="取消编辑资料源"><X/></button></div>
       <label className="field">采集网址<input aria-label="采集网址" aria-describedby="source-url-hint" type="url" value={editor.url} maxLength={2000} onChange={e=>patch('url',e.target.value)} placeholder="粘贴网页、公众号文章或 RSS 网址"/><small id="source-url-hint">直接填网址即可，默认自动识别，名称可留空。</small></label>
@@ -94,7 +94,7 @@ export function SourceSettings({settings,onSaved,onCollected}:{settings:Settings
     </fieldset></form>
     {busy==='preview'&&<p className="inline-hint" role="status"><LoaderCircle className="spin"/>正在读取来源与文章，请稍候…</p>}
     {preview&&<div className="source-preview" role="status"><strong>{preview.kind==='rss'?'订阅源':'网页'} · 找到 {preview.count} 条内容</strong><p>{preview.note} 预览不会加入选题库。</p>{preview.items.map(item=><article key={item.url}><a href={item.url} target="_blank" rel="noreferrer">{item.title}</a><p>{item.summary}</p></article>)}</div>}
-    {result&&<div className={`collection-result ${allFailed?'collection-failed':''}`} role={allFailed?'alert':'status'}><strong>{allFailed?'本次采集未成功，请检查网址或稍后重试。':`采集完成，新增 ${result.added} 条资料。${failures?` ${failures} 个来源未成功。`:''}`}</strong>{!allFailed&&result.added===0&&<p>没有新内容，已收录的网址会自动去重。</p>}<ul>{result.reports.map((r,i)=><li key={r.source+i} className={r.status==='error'?'failed':''}>{r.message}{r.status==='error'&&r.url&&<span className="collection-recovery"><a href={r.url} target="_blank" rel="noreferrer">打开原文 ↗</a><button className="text-button" type="button" disabled={!!busy} onClick={()=>openImport(r.url)}>导入网页正文</button></span>}</li>)}</ul></div>}
+    {result&&<div className={`collection-result ${allFailed?'collection-failed':''}`} ><strong>{allFailed?'本次采集未成功，请检查网址或稍后重试。':`采集完成，新增 ${result.added} 条资料。${failures?` ${failures} 个来源未成功。`:''}`}</strong>{!allFailed&&result.added===0&&<p>没有新内容，已收录的网址会自动去重。</p>}<ul>{result.reports.map((r,i)=><li key={r.source+i} className={r.status==='error'?'failed':''}>{r.message}{r.status==='error'&&r.url&&<span className="collection-recovery"><a href={r.url} target="_blank" rel="noreferrer">打开原文 ↗</a><button className="text-button" type="button" disabled={!!busy} onClick={()=>openImport(r.url)}>导入网页正文</button></span>}</li>)}</ul></div>}
     <div className="manual-import"><button className="text-button" type="button" disabled={!!busy} onClick={()=>setShowImport(!showImport)}>{showImport?'收起正文导入':'浏览器能打开，采集仍失败？导入网页正文'}</button>
     {showImport&&<form onSubmit={e=>{e.preventDefault();importBody();}}><fieldset disabled={!!busy} className="connection-fields"><p className="inline-hint">在你能正常访问的浏览器中复制正文，保留原文链接。导入内容会标记为待核验，不会自动制作。</p><label className="field">原文网址<input type="url" required maxLength={2000} value={importUrl} onChange={e=>setImportUrl(e.target.value)}/></label><label className="field">原文标题<input required maxLength={240} value={importTitle} onChange={e=>setImportTitle(e.target.value)}/></label><label className="field">网页正文<textarea required minLength={20} maxLength={60000} rows={8} value={importText} onChange={e=>setImportText(e.target.value)} placeholder="粘贴正文，至少 20 个字符"/></label><button className="ss-btn" type="submit">{busy==='import'?<LoaderCircle className="spin"/>:<Save/>}导入正文到选题库</button></fieldset></form>}
     </div>

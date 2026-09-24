@@ -1,78 +1,82 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Bird, Check, CircleAlert, Clapperboard, Clock3, LoaderCircle, Settings2, ShieldCheck, X } from 'lucide-react';
-import { api, dateText, send } from './api';
-import type { Health, Job, Page, Settings, Topic } from './types';
-import PelicanScene from './PelicanScene';
-import ReviewPage from './ReviewPage';
-import SettingsPage from './SettingsPage';
-import {SourceSettings} from './ConnectionSettings';
+import {useCallback,useEffect,useRef,useState} from 'react';
+import {ArrowRight,Bird,Clapperboard,FileText,Image,LoaderCircle,Plus,X} from 'lucide-react';
+import {api,dateText,send} from './api';
+import type {CreationKind,CreationTask,Settings,Topic} from './types';
+import ModelsPage from './ModelsPage';
+import TaskDelete from './TaskDelete';
+import TaskWorkbench from './TaskWorkbench';
+import MaterialsPage from './MaterialsPage';
+import './connections.css';
+import './articles.css';
+import {NotificationProvider,useNotifications,useNotificationHost} from './Notifications';
+import {ConfirmationProvider,useConfirmation} from './Confirmation';
 
 export const statuses={queued:'等待制作',running:'制作中',needs_review:'待审核',approved:'已通过',failed:'需要处理',changes_requested:'待修改',draft:'文案已更新'};
-const pages: {id:Page;name:string}[]=[{id:'home',name:'今日漫游'},{id:'topics',name:'每日选题'},{id:'review',name:'成片审核'},{id:'flow',name:'每日路线'}];
-
-export default function App(){
-  const [page,setPage]=useState<Page>(()=>pages.some(p=>p.id===location.hash.slice(1))?location.hash.slice(1) as Page:'home');
-  const [topics,setTopics]=useState<Topic[]>([]),[jobs,setJobs]=useState<Job[]>([]),[health,setHealth]=useState<Health|null>(null),[settings,setSettings]=useState<Settings|null>(null);
-  const [selected,setSelected]=useState(''),[jobId,setJobId]=useState('');
-  const [loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState('');
-  const refresh=useCallback(async()=>{
-    const [h,t,j,s]=await Promise.all([api<Health>('/health'),api<Topic[]>('/topics'),api<Job[]>('/jobs'),api<Settings>('/settings')]);
-    setHealth(h);setTopics(t);setJobs(j);setSettings(s);setError('');return j;
-  },[]);
+export const kindNames={video:'视频',article:'公众号文章',image:'图片'};
+export const kindIcons={video:Clapperboard,article:FileText,image:Image};
+export const runLabels:Record<string,string>={...statuses,publishing:'微信发布中',published:'已发布',wechat_draft:'微信草稿',awaiting_publish:'待你发布',ready:'已完成',needs_revision:'待修订',needs_angle:'待选角度',needs_outline:'待确认大纲',draft:'可编辑'};
+const pages=[{id:'home',name:'首页'},{id:'tasks',name:'任务列表'},{id:'materials',name:'素材库'},{id:'models',name:'我的模型'}];
+const route=()=>{const value=location.hash.slice(1);return pages.some(p=>p.id===value)||value.startsWith('task/')?value:'home';};
+export default function App(){return <NotificationProvider><ConfirmationProvider><StudioApp/></ConfirmationProvider></NotificationProvider>;}
+function StudioApp(){
+  const [page,setPage]=useState(route),[tasks,setTasks]=useState<CreationTask[]>([]),[topics,setTopics]=useState<Topic[]>([]),[settings,setSettings]=useState<Settings|null>(null);
+  const [loading,setLoading]=useState(true),[creating,setCreating]=useState(false);const dirty=useRef(false),navigating=useRef(false);const confirm=useConfirmation();
+  const {error:setError,success:setNotice}=useNotifications();
+  const refresh=useCallback(async()=>{const [t,p,s]=await Promise.all([api<CreationTask[]>('/tasks'),api<Topic[]>('/topics'),api<Settings>('/settings')]);setTasks(t);setTopics(p);setSettings(s);},[]);
   useEffect(()=>{refresh().catch(e=>setError(e.message)).finally(()=>setLoading(false));},[refresh]);
-  useEffect(()=>{const timer=setInterval(()=>{api<Job[]>('/jobs').then(setJobs).catch(()=>{});},3500);return()=>clearInterval(timer);},[]);
-  useEffect(()=>{const onHash=()=>{const next=location.hash.slice(1);if(pages.some(p=>p.id===next))setPage(next as Page);};addEventListener('hashchange',onHash);return()=>removeEventListener('hashchange',onHash);},[]);
-  const navigate=(next:Page)=>{setPage(next);location.hash=next;window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'instant':'smooth'});};
-  const tell=(text:string)=>setNotice(text);
-  const choose=(id:string)=>{setSelected(id);navigate('topics');};
-  const run=async(topic:Topic)=>{
-    setBusy('create');setError('');
-    try{const job=await api<Job>('/jobs',send('POST',{topic_id:topic.id,mode:'ai',request_id:crypto.randomUUID()}));setJobId(job.id);await refresh();navigate('review');tell('制作任务已加入队列，进度会自动更新。');}catch(e){setError((e as Error).message);}finally{setBusy('');}
-  };
-  const curate=async()=>{setBusy('curate');setError('');try{const result=await api<{selected:number;note:string}>('/curate',send('POST'));await refresh();tell(`已推荐 ${result.selected} 个选题。${result.note}`);}catch(e){setError((e as Error).message);}finally{setBusy('');}};
-  const selectedTopic=topics.find(t=>t.id===selected)||topics[0];
-  const pending=jobs.filter(j=>j.status==='needs_review').length;
-  return <div id="science-fieldnotes">
-    <a className="skip-link" href="#main">跳到主要内容</a>
-    <header className="fn-header"><button className="fn-brand" onClick={()=>navigate('home')} aria-label="知序，回到首页"><span className="fn-brand-mark"><Bird/></span><span><strong>{settings?.account_name||'知序'} · 科学漫游编辑部</strong><small>THE LITTLE SCIENCE CLUB</small></span></button>
-      <nav className="fn-navigation" aria-label="主导航">{pages.map(p=><button key={p.id} className="fn-nav" aria-label={p.name} aria-current={page===p.id?'page':undefined} aria-selected={page===p.id} onClick={()=>navigate(p.id)}>{p.name}{p.id==='review'&&pending>0&&<span className="nav-count" aria-hidden="true">{pending}</span>}</button>)}</nav>
-      <span className="fn-edition"><span className="fn-dot"/>本地工作台 / V. 0.1</span>
-    </header>
-    {error&&<div className="message error" role="alert"><CircleAlert/><span>{error}</span><button onClick={()=>setError('')} aria-label="关闭错误"><X/></button></div>}
-    {notice&&<div className="message" role="status"><Check/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="关闭提示"><X/></button></div>}
-    <main id="main">
-      {loading?<div className="empty"><LoaderCircle className="spin"/><h2>正在翻开工作手记…</h2></div>:!health?<div className="empty"><CircleAlert/><h2>工作台暂时未连接</h2><p>请启动后端服务，再重新连接。</p><button className="ss-btn" onClick={()=>refresh().catch(e=>setError(e.message))}>重新连接</button></div>:<>
-        {page==='home'&&<><PelicanScene onExplore={()=>navigate('topics')}/>
-          <div className="fn-notes-heading"><div><span className="fn-label">THE FIELD NOTES / 今日手记</span><h2>先从一个好问题出发。</h2></div><button className="fn-text-action" onClick={()=>navigate('topics')}>翻阅选题 <ArrowRight/></button></div>
-          {!topics.length?<div className="empty home-empty"><Bird/><h3>还没有选题，先配置采集网址。</h3><p>从你关注的网站，收集第一条创作线索。</p><button className="ss-btn ss-primary" onClick={()=>navigate('topics')}>配置采集数据 <ArrowRight/></button></div>:<div className="fn-notes-grid">{topics.slice(0,3).map((topic,i)=><button key={topic.id} className="fn-note" onClick={()=>choose(topic.id)}><span className="fn-note-top"><span>0{i+1} / 网页资料</span><span>{topic.source}</span></span><h3>{topic.title}</h3><span className="fn-note-bottom">网络采集 · 查看资料<ArrowUpRight/></span></button>)}</div>}
-          <div className="fn-daily"><span><span className="fn-dot"/>{settings?.schedule_enabled?`${settings.schedule_time} 自动出发`:'每日计划待启用'}</span><p>收集灵感 <span>—</span> 写短标题 <span>—</span> 剪成短片 <span>—</span> 等你过目</p><span className="fn-daily-end">a little science, a little joy.</span></div>
-          {jobs.length>0&&<button className="latest-job" onClick={()=>{setJobId(jobs[0].id);navigate('review');}}><Clapperboard/><span><strong>{jobs[0].script?.title||topics.find(t=>t.id===jobs[0].topic_id)?.title||'最新制作任务'}</strong><small>{statuses[jobs[0].status]} · {dateText(jobs[0].created_at)}</small></span><ArrowRight/></button>}
-        </>}
-        {page==='topics'&&settings&&<TopicsPage topics={topics} topic={selectedTopic} onSelect={setSelected} onCreate={run} onCollected={refresh} onSaved={setSettings} onCurate={curate} busy={busy} health={health} settings={settings} jobs={jobs} onOpenJob={id=>{setJobId(id);navigate('review');}}/>}
-        {page==='review'&&<ReviewPage jobs={jobs} selectedId={jobId} onSelect={setJobId} onRefresh={refresh} onError={setError} onNotice={tell} onExplore={()=>navigate('topics')}/>}
-        {page==='flow'&&settings&&<SettingsPage onConnectionChanged={refresh} settings={settings} health={health} onSaved={s=>{setSettings(s);refresh().catch(()=>{});}} onError={setError} onNotice={tell}/>}
-      </>}
-    </main>
-    <footer className="ss-footer"><span>知序 · 科学漫游编辑部</span><span>{health?.ai_ready?`AI 已配置 · ${health.model}`:'10 秒无配音短片 · AI 服务待配置'}　/　人工审核后手动发布</span></footer>
+  useEffect(()=>{const timer=setInterval(()=>api<CreationTask[]>('/tasks').then(setTasks).catch(()=>{}),4000);return()=>clearInterval(timer);},[]);
+  useEffect(()=>{const changed=async()=>{
+    const next=route();if(next===page)return;
+    if(navigating.current){history.replaceState(null,'','#'+page);return;}
+    if(dirty.current){
+      history.replaceState(null,'','#'+page);navigating.current=true;
+      const leave=await confirm({title:'离开当前编辑？',message:'当前页面还有未保存的修改。离开后，这些修改将不会保留。',confirmLabel:'放弃修改并离开',cancelLabel:'继续编辑',tone:'discard'});
+      navigating.current=false;if(!leave)return;history.replaceState(null,'','#'+next);
+    }
+    dirty.current=false;setPage(next);window.scrollTo(0,0);
+  };addEventListener('hashchange',changed);return()=>removeEventListener('hashchange',changed);},[page,confirm]);
+  useEffect(()=>{const leave=(e:BeforeUnloadEvent)=>{if(dirty.current){e.preventDefault();e.returnValue='';}};addEventListener('beforeunload',leave);return()=>removeEventListener('beforeunload',leave);},[]);
+  const navigate=(next:string)=>{location.hash=next;};const mark=useCallback((v:boolean)=>{dirty.current=v;},[]);const newTask=()=>setCreating(true);
+  const removed=(id:string)=>{dirty.current=false;setTasks(current=>current.filter(t=>t.id!==id));if(page==='task/'+id){history.replaceState(null,'','#tasks');setPage('tasks');window.scrollTo(0,0);}};
+  return <div id="science-fieldnotes" className={'creation-platform'+(page.startsWith('task/')?' task-detail-page':'')}><a className="skip-link" href="#main">跳到主要内容</a>
+    {!page.startsWith('task/')&&<header className="fn-header"><button className="fn-brand" onClick={()=>navigate('home')} aria-label="知序，回到首页"><span className="fn-brand-mark"><Bird/></span><span><strong>知序 · 创作空间</strong><small>SELF MEDIA STUDIO</small></span></button><nav className="fn-navigation" aria-label="主导航">{pages.map(p=><button key={p.id} className="fn-nav" aria-current={(page===p.id||(p.id==='tasks'&&page.startsWith('task/')))?'page':undefined} onClick={()=>navigate(p.id)}>{p.name}</button>)}</nav><button className="ss-btn ss-primary" onClick={newTask}><Plus/>新建任务</button></header>}
+    <main id="main">{loading?<div className="empty"><LoaderCircle className="spin"/><h2>正在打开创作空间…</h2></div>:!settings?<div className="empty"><h2>暂时未连接工作台</h2><button className="ss-btn" onClick={()=>refresh().catch(e=>setError(e.message))}>重新连接</button></div>:<>
+      {page==='home'&&<Home tasks={tasks} onOpen={id=>navigate('task/'+id)} onNew={newTask} onAll={()=>navigate('tasks')} onDeleted={removed}/>}
+      {page==='tasks'&&<TaskList tasks={tasks} onOpen={id=>navigate('task/'+id)} onNew={newTask} onDeleted={removed} onRefresh={refresh}/>}
+      {page==='materials'&&<MaterialsPage settings={settings} topics={topics} onSaved={setSettings} onRefresh={refresh} onError={setError} onNotice={setNotice}/>}
+      {page==='models'&&<ModelsPage onError={setError} onNotice={setNotice}/>}
+      {page.startsWith('task/')&&<TaskWorkbench onDeleted={removed} key={page} id={page.slice(5)} topics={topics} onRefresh={refresh} onDirty={mark} onError={setError} onNotice={setNotice}/>}
+    </>}</main><footer className="ss-footer"><span>知序 · 自媒体创作平台</span><span>本地保存 · 北京时间 · 定时执行需保持服务运行</span></footer>
+    {creating&&<NewTask onClose={()=>setCreating(false)} onCreated={async task=>{setCreating(false);await refresh();navigate('task/'+task.id);setNotice('任务已创建，可以开始配置。');}}/>}
   </div>;
 }
-
-function TopicsPage({topics,topic,onSelect,onCreate,onCollected,onSaved,onCurate,busy,health,settings,jobs,onOpenJob}:{topics:Topic[];topic:Topic|undefined;onSelect:(id:string)=>void;onCreate:(t:Topic)=>void;onCollected:()=>Promise<unknown>;onSaved:(s:Settings)=>void;onCurate:()=>void;busy:string;health:Health;settings:Settings;jobs:Job[];onOpenJob:(id:string)=>void}){
-  const current=topic||topics[0];
-  const related=jobs.find(j=>j.topic_id===current?.id);
-  const configured=settings.sources.length>0||settings.custom_sources.some(s=>s.enabled);
-  return <section><div className="ss-heading"><div><div className="ss-eyebrow">FIELD NOTES / 每日采风</div><h1>捡起一个好问题。</h1><p>配置采集网址，把网络上的发现变成今天的创作手记。</p></div></div>
-    <SourceSettings settings={settings} onSaved={onSaved} onCollected={onCollected}/>
-    <div className="ss-plan"><div className="ss-plan-left"><Clock3/><span>{settings.schedule_enabled?`每日 ${settings.schedule_time} · 北京时间`:'定时计划未启用'}</span></div><div className="ss-plan-flow"><b>按需制作</b><span>→</span><b>10 秒图集 / 视频</b><span>→</span><b>你审核</b></div></div>
-    <div className="topic-results-heading"><div><h2>采集到的选题 <span className="ss-badge">{topics.length}</span></h2><p>读取原文、匹配画面，再生成简短标题。</p></div><button className="ss-btn" disabled={!!busy||!health.ai_ready||!topics.length} onClick={onCurate}>{busy==='curate'?<LoaderCircle className="spin"/>:<Bird/>}{busy==='curate'?'正在筛选…':'AI 推荐最多 5 题'}</button></div>
-    {!current?<div className="empty"><Bird/><h2>今天的手记还是空白。</h2><p>{configured?'点击上方“保存并采集”获取资料，支持任意领域的公开网页。':'还没有配置采集源。请在上方输入网址，点击“保存并采集”。'}</p></div>:<div className="ss-board"><div><div className="ss-section-label">选题候选 <span>{topics.length} 个问题，等你探索</span></div><div className="ss-topics">{topics.map((t,i)=><button key={t.id} className="ss-topic" onClick={()=>onSelect(t.id)} aria-pressed={t.id===current.id}><span className="ss-topic-meta"><span className="ss-num">{String(i+1).padStart(2,'0')}</span>{t.source}</span><strong className="ss-topic-title">{t.title}</strong><span className="ss-topic-bottom"><span>{dateText(t.published_at)}</span><span>原文待核验</span></span></button>)}</div></div>
-      <article className="ss-detail"><div className="ss-cover"><span className="ss-cover-tag">网页资料线索</span><div className="ss-cover-label"><span>A LITTLE WONDER</span><strong>网页观察手记</strong></div></div><div className="ss-detail-body"><span className="ss-badge ss-green">网络采集</span> <span className="ss-badge ss-amber">需人工核验</span><h2>{current.title}</h2>{current.page_data&&<p className="inline-hint">{({browser:'浏览器加载',http:'网页直读',rss:'订阅摘要',manual:'手动导入'} as Record<string,string>)[current.page_data.method]||'网页采集'} · {current.page_data.full_text?'已保存正文':'页面摘要'} · {current.page_data.images.length} 张图片线索</p>}<div className="ss-field"><div className="ss-field-label">来源摘要</div><p>{current.angle}</p></div><div className="ss-field"><div className="ss-field-label">依据与素材</div><p>{current.rights}</p>{current.sources.map(s=><a key={s.id} className="source-link" href={s.url} target="_blank" rel="noreferrer">{s.publisher} · 查看原文<ArrowUpRight/></a>)}</div>
-      <details className="script-peek"><summary>查看已采集正文与链接</summary><p className="captured-text">{current.sources[0]?.text}</p>{current.page_data?.links.map(link=><a className="source-link" key={link.url} href={link.url} target="_blank" rel="noreferrer">{link.title}<ArrowUpRight/></a>)}</details>
-      {current.curation&&<div className="ss-field"><div className="ss-field-label">AI 推荐理由 · {dateText(current.curation.at)}</div><p>{current.curation.reason}</p></div>}
-      {!health.ai_ready&&<p className="inline-hint"><Settings2/>制作成片需要 AI。<a href="#flow">前往每日路线配置模型</a></p>}
-      <div className="ss-detail-footer"><span className="ss-small">无配音 · 9:16 · 10 秒</span><button className="ss-btn ss-primary" disabled={!!busy||!health.ai_ready} onClick={()=>onCreate(current)}>{busy==='create'?<LoaderCircle className="spin"/>:<Clapperboard/>}制作这一题</button></div>
-      {related&&<button className="related-job" onClick={()=>onOpenJob(related.id)}>{statuses[related.status]} · 查看已有任务 <ArrowRight/></button>}
-      </div></article></div>}
-    <div className="ss-bottomline"><ShieldCheck/><span>用相关图片或视频，搭配一两句短标题。可在“编辑文案与画面”上传素材并调整顺序。</span></div>
+function Home({tasks,onOpen,onNew,onAll,onDeleted}:{tasks:CreationTask[];onOpen:(id:string)=>void;onNew:()=>void;onAll:()=>void;onDeleted:(id:string)=>void}){
+  const active=tasks.filter(t=>!t.archived),scheduled=active.filter(t=>t.settings.execution==='automatic');
+  return <><section className="studio-welcome"><div><span className="fn-label">YOUR IDEAS, TAKING SHAPE</span><h1>让每一个想法，<br/>有自己的创作空间。</h1><p>写一篇文章，制作一支短片，或者一组图文。<br/>亲手打磨，也可以设定时间，让灵感持续生长。</p><button className="ss-btn ss-primary" onClick={onNew}>开始新的创作 <ArrowRight/></button></div><div className="studio-collage" aria-hidden="true"><div className="collage-card collage-video"><Clapperboard/><span>10 SEC / VIDEO</span><div className="mini-landscape"><i/><b/></div></div><div className="collage-card collage-article"><FileText/><span>WORDS / IDEAS</span><strong>一个好故事，<br/>从这里开始。</strong><i/><i/><i/></div><div className="collage-card collage-image"><Image/><span>IMAGE / MOMENTS</span><b>记录<br/>每一份灵感</b></div></div></section>
+    <div className="studio-stats"><span><strong>{active.length}</strong>创作任务</span><span><strong>{scheduled.length}</strong>定时执行</span><span><strong>{active.reduce((n,t)=>n+(t.run_count||0),0)}</strong>创作记录</span><p>一个任务，一套创作习惯。</p></div>
+    <div className="section-title"><div><span className="fn-label">RECENT PROJECTS</span><h2>最近的创作任务</h2></div><button className="fn-text-action" onClick={onAll}>查看全部 <ArrowRight/></button></div>{active.length?<div className="task-grid">{active.slice(0,6).map(t=><TaskCard key={t.id} task={t} onOpen={onOpen} onDeleted={onDeleted}/>)}</div>:<div className="empty platform-empty"><Bird/><h2>给第一个想法起个名字。</h2><p>创建任务后，再选择方向、模型和创作方式。</p><button className="ss-btn" onClick={onNew}><Plus/>创建第一个任务</button></div>}</>;
+}
+function TaskCard({task:t,onOpen,onDeleted}:{task:CreationTask;onOpen:(id:string)=>void;onDeleted:(id:string)=>void}){
+  const Icon=kindIcons[t.kind];
+  return <article className={'task-card task-'+t.kind}><button className="task-card-open" onClick={()=>onOpen(t.id)}>
+    <span className="task-card-top"><span className="task-type"><Icon/>{kindNames[t.kind]}</span><span className="ss-badge">{t.archived?'已归档':t.latest_run?runLabels[t.latest_run.status]||t.latest_run.status:'待配置'}</span></span>
+    <strong>{t.name}</strong><p>{t.settings.brief||(t.kind==='article'?t.settings.article.direction:'')||'打开工作台，配置你的创作方向。'}</p>
+    <span className="task-card-bottom"><span>{t.archived?'定时执行已暂停':t.settings.execution==='automatic'?`${t.settings.schedule.time} · 定时执行`:'手动创作'}<small>{dateText(t.created_at)} 创建 · {t.run_count||0} 次创作</small></span><ArrowRight/></span>
+    </button><div className="task-card-actions"><TaskDelete task={t} onDeleted={onDeleted} compact/></div></article>;
+}
+function TaskList({tasks,onOpen,onNew,onDeleted,onRefresh}:{tasks:CreationTask[];onOpen:(id:string)=>void;onNew:()=>void;onDeleted:(id:string)=>void;onRefresh:()=>Promise<unknown>}){
+  const [kind,setKind]=useState('all'),[query,setQuery]=useState(''),[archived,setArchived]=useState(false),[trash,setTrash]=useState(false),[deleted,setDeleted]=useState<CreationTask[]>([]),[loadingTrash,setLoadingTrash]=useState(false),[restoring,setRestoring]=useState('');
+  const {error,success}=useNotifications();
+  useEffect(()=>{if(!trash)return;let live=true;setLoadingTrash(true);api<CreationTask[]>('/tasks?deleted=true').then(v=>{if(live)setDeleted(v);}).catch(e=>{if(live)error(e.message);}).finally(()=>{if(live)setLoadingTrash(false);});return()=>{live=false;};},[trash]);
+  const restore=async(t:CreationTask)=>{setRestoring(t.id);try{await api(`/tasks/${t.id}/restore`,send('POST',{version:t.version}));setDeleted(v=>v.filter(x=>x.id!==t.id));await onRefresh();success('任务已恢复到“已归档”，打开任务并点击“恢复任务”后才会重新启用定时执行。');}catch(e){error((e as Error).message);}finally{setRestoring('');}};
+  const list=(trash?deleted:tasks.filter(t=>Boolean(t.archived)===archived)).filter(t=>(kind==='all'||kind===t.kind)&&t.name.toLowerCase().includes(query.toLowerCase()));
+  return <section><div className="platform-heading"><div><span className="fn-label">ALL PROJECTS</span><h1>{trash?'任务回收站':'任务列表'}</h1><p>{trash?'删除的任务保留作品与记录，恢复后先放入已归档，定时执行保持暂停。':'每个任务都有独立配置，历次创作保存在各自的工作台。'}</p></div><span className="ss-badge">{list.length} 个任务</span></div>
+    <div className="task-filters"><div className="segmented" aria-label="任务类型">{[['all','全部'],['video','视频'],['article','文章'],['image','图片']].map(([v,l])=><button key={v} aria-pressed={kind===v} onClick={()=>setKind(v)}>{l}</button>)}</div><input aria-label="搜索任务" placeholder="搜索任务名称…" value={query} onChange={e=>setQuery(e.target.value)}/>{!trash&&<label className="check-line"><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/>已归档</label>}<button className="ss-btn" aria-pressed={trash} onClick={()=>setTrash(v=>!v)}>{trash?'返回任务列表':'回收站'}</button></div>
+    {loadingTrash&&trash?<p className="inline-hint">正在读取回收站…</p>:list.length?<div className="task-grid">{list.map(t=>trash?<article className="task-card trash-task-card" key={t.id}><span className="task-type">{kindNames[t.kind]} · 已删除</span><strong>{t.name}</strong><p>{dateText(t.deleted_at||null)} 删除 · {t.run_count||0} 次创作</p><button className="ss-btn" disabled={!!restoring} onClick={()=>restore(t)}>{restoring===t.id?'恢复中…':'从回收站恢复'}</button></article>:<TaskCard key={t.id} task={t} onOpen={onOpen} onDeleted={onDeleted}/>)}</div>:<div className="empty platform-empty"><h2>{trash?'回收站中没有符合条件的任务':query||kind!=='all'||archived?'没有符合条件的任务':'还没有创作任务'}</h2>{!trash&&<button className="ss-btn" onClick={onNew}><Plus/>创建任务</button>}</div>}
   </section>;
+}
+function NewTask({onClose,onCreated}:{onClose:()=>void;onCreated:(t:CreationTask)=>Promise<void>}){
+  const [name,setName]=useState(''),[kind,setKind]=useState<CreationKind>('article'),[busy,setBusy]=useState(false);const {error:setError}=useNotifications(),setNotificationHost=useNotificationHost();const dialog=useRef<HTMLDialogElement>(null),request=useRef(crypto.randomUUID());useEffect(()=>{dialog.current?.showModal();setNotificationHost(dialog.current);return()=>setNotificationHost(null);},[setNotificationHost]);
+  const create=async()=>{setBusy(true);try{await onCreated(await api<CreationTask>('/tasks',send('POST',{name,kind,request_id:request.current})));}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
+  return <dialog className="new-task-dialog" ref={dialog} onCancel={e=>{e.preventDefault();if(!busy)onClose();}} aria-labelledby="new-task-title"><form onSubmit={e=>{e.preventDefault();create();}}><div className="section-title"><span className="fn-label">A NEW BEGINNING</span><button type="button" className="icon-button" aria-label="关闭新建任务" disabled={busy} onClick={onClose}><X/></button></div><h2 id="new-task-title">新建创作任务</h2><p>先起个名字，再进入专属工作台。</p><fieldset disabled={busy}><label className="field">任务名称<input autoFocus required maxLength={80} value={name} onChange={e=>{setName(e.target.value);request.current=crypto.randomUUID();}} placeholder="例如：每天一个 AI 实用技巧"/></label><span className="field-label">任务类型</span><div className="creation-types">{(['video','article','image'] as const).map(v=>{const Icon=kindIcons[v];return <button type="button" key={v} aria-pressed={kind===v} onClick={()=>{setKind(v);request.current=crypto.randomUUID();}}><Icon/><strong>{kindNames[v]}</strong><small>{v==='video'?'短片 · 图集视频':v==='article'?'构思 · 长文写作':'海报 · 图文卡片'}</small></button>;})}</div><button className="ss-btn ss-primary create-submit" type="submit" disabled={!name.trim()}>{busy?<LoaderCircle className="spin"/>:<ArrowRight/>}创建并进入工作台</button></fieldset></form></dialog>;
 }
