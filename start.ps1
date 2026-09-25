@@ -33,6 +33,16 @@ New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 $healthy = $false
 try { $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2; $healthy = ($health.ok -and $health.version -eq '0.1.0' -and $health.local_only) } catch {}
 if (!$healthy) {
+    # Keep the previous run's diagnostics before Start-Process replaces these files.
+    $logArchiveDirectory = Join-Path $dataDirectory 'logs'
+    $logArchiveStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    foreach ($logName in @('server.log','server-error.log')) {
+        $previousLogPath = Join-Path $dataDirectory $logName
+        if (Test-Path -LiteralPath $previousLogPath) {
+            New-Item -ItemType Directory -Path $logArchiveDirectory -Force | Out-Null
+            Copy-Item -LiteralPath $previousLogPath -Destination (Join-Path $logArchiveDirectory "$logArchiveStamp-$logName")
+        }
+    }
     $process = Start-Process -FilePath $pythonPath -ArgumentList @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port','8765','--workers','1') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $dataDirectory 'server.log') -RedirectStandardError (Join-Path $dataDirectory 'server-error.log')
     $process.Id | Set-Content -LiteralPath (Join-Path $dataDirectory 'server.pid')
     for ($attempt=0; $attempt -lt 30; $attempt++) {

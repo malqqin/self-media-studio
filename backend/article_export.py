@@ -2,16 +2,25 @@
 import html
 import io
 import zipfile
+import base64
 from . import db
 from .media import asset_path
-from .article_templates import get_template, styles
+from .article_templates import get_template, styles, decoration_id, decoration_path, motion_paths
+
+
+def body_image_ids(doc):
+    return list(dict.fromkeys(filter(None,[decoration_id(doc),doc.get('cover_asset_id','')]+[s.get('asset_id','') for s in doc['sections']])))
 
 
 def images(doc):
-    ids = list(dict.fromkeys([doc.get('cover_asset_id','')]+[s.get('asset_id','') for s in doc['sections']]))
+    ids = body_image_ids(doc)
     found = {}
     with db.connect() as c:
         for ident in filter(None, ids):
+            decoration=decoration_path(ident)
+            if decoration:
+                found[ident]=(f'images/{ident}{decoration.suffix}',decoration)
+                continue
             row = c.execute('SELECT * FROM assets WHERE id=?', (ident,)).fetchone()
             if row and row['media_type'].startswith('image/'):
                 path = asset_path(dict(row))
@@ -23,7 +32,7 @@ def images(doc):
     return found
 
 
-def html_body(doc, image_paths=None, *, wechat=False):
+def html_body(doc, image_paths=None, *, wechat=False, animation_paths=None):
     paths = image_paths or {}
     esc = html.escape
     template=get_template(doc.get('template_id'));css=styles(template['id'])
@@ -34,9 +43,21 @@ def html_body(doc, image_paths=None, *, wechat=False):
         if ident not in paths:
             return ''
         return f'<figure style="{style("figure")}"><img src="{esc(paths[ident],quote=True)}" alt="{esc(caption,quote=True)}" style="{style("image")}"/>'+ (f'<figcaption style="{style("caption")}">{esc(caption)}</figcaption>' if caption else '')+'</figure>'
-    body = [f'<section data-article-template="{template["id"]}" style="{style("root")}">',
+    ornament='';ident=decoration_id(doc)
+    if ident:
+        # Embed small, trusted decorations in standalone HTML. WeChat uses the
+        # uploaded image map; plain clipboard exports omit local/data URLs.
+        source=paths.get(ident);motion=motion_paths(ident)
+        if motion and not wechat:
+            urls=animation_paths or {}
+            def motion_url(kind):return urls.get(kind) or 'data:image/'+('svg+xml' if kind=='svg' else 'png')+';base64,'+base64.b64encode(motion[kind].read_bytes()).decode()
+            ornament=f'<picture><source media="(prefers-reduced-motion: reduce)" srcset="{esc(motion_url("png"),quote=True)}"/><img data-template-decoration="{ident}" src="{esc(motion_url("svg"),quote=True)}" alt="" style="{style("decoration")}"/></picture>'
+        else:
+            if not source and not wechat:source='data:image/png;base64,'+base64.b64encode(decoration_path(ident).read_bytes()).decode()
+            if source:ornament=f'<img data-template-decoration="{ident}" src="{esc(source,quote=True)}" alt="" style="{style("decoration")}"/>'
+    body = [f'<section data-article-template="{template["id"]}" style="{style("root")}">',ornament,
             f'<h1 style="{style("title")}">{esc(doc["title"])}</h1>',
-            image(doc.get('cover_asset_id','')), paragraph(doc['summary'],'summary')]
+            image(doc.get('cover_asset_id',''),doc.get('cover_caption','')), paragraph(doc['summary'],'summary')]
     if doc.get('opening'):
         body.append(paragraph(doc['opening']))
     for index,section in enumerate(doc['sections'],1):
@@ -62,7 +83,7 @@ def markdown(doc, image_paths=None):
         return value
     chunks = ['# '+esc(doc['title']), esc(doc['summary'])]
     if doc.get('cover_asset_id') in paths:
-        chunks.append(f'![封面]({paths[doc["cover_asset_id"]]})')
+        chunks.append(f'![{esc(doc.get("cover_caption") or "封面")}]({paths[doc["cover_asset_id"]]})')
     chunks.append(esc(doc.get('opening','')))
     for section in doc['sections']:
         chunks += ['## '+esc(section['heading']), *[esc(p) for p in section['paragraphs']]]
@@ -76,18 +97,23 @@ def bundle(article):
     doc = article['document']
     assets = images(doc)
     paths = {ident: value[0] for ident,value in assets.items()}
+    animation=motion_paths(decoration_id(doc))
+    animation_urls={kind:f'images/{decoration_id(doc)}.{kind}' for kind in animation}
     output = io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr('article.html','<!doctype html><meta charset="utf-8">'+html_body(doc,paths))
+        archive.writestr('article.html','<!doctype html><meta charset="utf-8">'+html_body(doc,paths,animation_paths=animation_urls))
+        if animation:archive.writestr('wechat.html','<!doctype html><meta charset="utf-8">'+html_body(doc,paths,wechat=True))
         archive.writestr('article.md', markdown(doc,paths))
         archive.writestr('sources.json',db.dump(article['source_data']))
         archive.writestr('checks.json',db.dump(article['checks']))
         with db.connect() as c:
             metadata = [{key: row[key] for key in ('id','filename','rights','credit','source_url')}
                         for ident in assets for row in c.execute('SELECT * FROM assets WHERE id=?',(ident,))]
+        metadata += [{'id':ident,'filename':name,'rights':'平台原创排版装饰，可随文章使用','credit':'','source_url':''} for ident,(name,_) in assets.items() if decoration_path(ident)]
         archive.writestr('assets.json',db.dump(metadata))
         archive.writestr('article.json',db.dump(doc))
-        archive.writestr('README.txt','打开 article.html 查看排版。图片位于 images 目录；粘贴到公众号后需上传图片并检查排版。来源与检查报告仅供编辑核验，不会自动发布。')
+        archive.writestr('README.txt','打开 article.html 查看排版。图片位于 images 目录；粘贴到公众号后需上传图片并检查排版。'+('本模板包含 SVG 动效、GIF 动图与 PNG 静态图；article.html 使用 SVG 并跟随系统减少动态效果，wechat.html 使用 GIF，公众号上传请选择 GIF 原文件，实际播放以微信端为准。' if animation else '')+'来源与检查报告仅供编辑核验，不会自动发布。')
         for name,path in assets.values():
             archive.write(path,name)
+        for kind,path in animation.items():archive.write(path,animation_urls[kind])
     return output.getvalue()

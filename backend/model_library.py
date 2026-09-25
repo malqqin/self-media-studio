@@ -56,7 +56,7 @@ def catalog():
         for ident, value in read().items():
             configured = bool(value.get('protected_key'))
             result.append({'id':ident, **{k:value[k] for k in ('name','base_url','model','protocol','output_mode')},
-                           'key_configured':configured,'ready':configured and bool(value.get('model')),'origin':'library'})
+                           'image_edit':value.get('image_edit',False),'key_configured':configured,'ready':configured and bool(value.get('model')),'origin':'library'})
     return result
 
 

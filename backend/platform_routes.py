@@ -1,14 +1,32 @@
 import uuid
 from pydantic import BaseModel,Field
+from typing import Literal
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
-from . import db, config, model_library, task_store, task_engine, task_sources, image_studio
+from . import db, config, model_library, task_store, task_engine, task_sources, image_studio, pictures
 from .models import ModelConnection
 from .task_models import CreateTask, EditTask, ExecuteTask, TaskSettings, EditImage
+from .picture_models import PictureSearch, PictureRequest
 from .article_models import ArticleVersion
 from . import wechat_accounts, wechat_delivery, wechat_browser, article_export
 
 router=APIRouter(prefix='/api')
+
+
+@router.get('/pictures/search')
+def picture_search(query: str,source: Literal['web','licensed']='web',details: bool=False):
+    request=PictureSearch(query=query,source=source)
+    return pictures.search_report(request.query,request.source) if details else pictures.search(request.query,request.source)
+
+
+@router.post('/pictures')
+def picture_create(body: PictureRequest):
+    return pictures.create(body)
+
+
+@router.get('/pictures/{ident}')
+def picture_detail(ident: str):
+    return pictures.get(ident)
 
 
 @router.get('/wechat/accounts')
@@ -95,6 +113,12 @@ def test_model(ident:str,body:ModelConnection):return probe(body,ident)
 
 
 def probe(body,ident=None):
+    if body.protocol == 'images':
+        value=model_library.resolve(body,ident)
+        if not value.get('api_key'):raise ValueError('请填写图片模型密钥。')
+        pictures.generate(PictureRequest(request_id='test-'+uuid.uuid4().hex,action='generate',prompt='白色背景上的一片绿色叶子，无文字，无水印',ratio='square'),
+                          'picture-test-'+uuid.uuid4().hex,connection=value)
+        return {'message':'图片生成成功，测试图片已保存到素材库。'}
     from .ai import request_structured
     from pydantic import BaseModel
     from typing import Literal
@@ -107,6 +131,10 @@ def probe(body,ident=None):
 
 @router.get('/tasks')
 def tasks(deleted:bool=False):return task_store.listing(deleted=deleted)
+
+
+@router.get('/task-records')
+def task_records():return task_store.records()
 
 
 @router.post('/tasks',status_code=201)
@@ -146,6 +174,8 @@ def save_task(ident:str,body:EditTask):
         if body.settings.execution=='automatic':task_engine.validated(body.settings,task['kind'])
         for asset_id in body.settings.video.asset_ids+[body.settings.image.asset_id]:
             if asset_id and not c.execute('SELECT 1 FROM assets WHERE id=?',(asset_id,)).fetchone():raise ValueError('所选素材已不存在。')
+        for asset_id in body.settings.illustration.asset_ids:
+            if not c.execute("SELECT 1 FROM assets WHERE id=? AND media_type LIKE 'image/%'",(asset_id,)).fetchone():raise ValueError('配图素材必须为已有图片。')
         c.execute('UPDATE creation_tasks SET name=?,settings=?,version=version+1,updated_at=? WHERE id=?',(body.name,body.settings.model_dump_json(),db.now(),ident))
     return task_store.detail(ident)
 

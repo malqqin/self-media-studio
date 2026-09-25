@@ -8,6 +8,7 @@ import re
 from contextlib import contextmanager
 from urllib.parse import urlsplit,parse_qs
 from . import wechat_browser, wechat_accounts, wechat_delivery, article_export, model_config
+from .article_templates import decoration_id
 
 TITLE='.title-editor__input .ProseMirror'
 BODY='.view.rich_media_content .ProseMirror'
@@ -63,7 +64,7 @@ def verify_body(page,doc):
     if result=='structure':
         raise wechat_accounts.WeChatError('微信的“内容结构检测”拦住了正文插入，请检查文章排版；正文尚未完整保存。',uncertain=True)
     from playwright.sync_api import expect
-    expected=sum(bool(section.get('asset_id')) for section in doc['sections'])+bool(doc.get('cover_asset_id'))
+    expected=sum(bool(section.get('asset_id')) for section in doc['sections'])+bool(doc.get('cover_asset_id'))+bool(decoration_id(doc))
     expect(page.locator(BODY+' img[src^="http"]')).to_have_count(expected)
 
 
@@ -103,13 +104,13 @@ def fill_body(page,data):
     paste(page,'')
     expect(page.locator(BODY+' img[src]')).to_have_count(0)
     paths={}
-    for ident in dict.fromkeys([doc.get('cover_asset_id')]+[s.get('asset_id') for s in doc['sections']]):
+    for ident in article_export.body_image_ids(doc):
         if not ident:continue
         dismiss_tips(page)
-        content=wechat_delivery.image_bytes(ident)
+        name,content,mime=wechat_delivery.inline_image(ident)
         images=page.locator(BODY+' img[src^="http"]');before=images.count()
         page.locator(BODY).click();page.keyboard.press('Control+End')
-        page.locator('input[type=file][accept*="image/svg"]').set_input_files({'name':ident+'.jpg','mimeType':'image/jpeg','buffer':content})
+        page.locator('input[type=file][accept*="image/svg"]').set_input_files({'name':name,'mimeType':mime,'buffer':content})
         expect(images).to_have_count(before+1,timeout=40000)
         img=images.nth(before)
         expect(img).to_have_attribute('src',re.compile(r'https?://'),timeout=40000)

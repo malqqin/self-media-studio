@@ -102,7 +102,9 @@ def require(c, ident, version=None, *, include_deleted=False):
 def content_status(c, task_kind, run):
     if not run['content_id']:return run
     table={'article':'articles','video':'jobs','image':'image_jobs'}[task_kind]
-    content=c.execute(f'SELECT status,error FROM {table} WHERE id=?',(run['content_id'],)).fetchone()
+    column='script' if task_kind=='video' else 'document'
+    content=c.execute(f'SELECT status,error,{column} AS content FROM {table} WHERE id=?',(run['content_id'],)).fetchone()
+    if content:run['title']=(json.loads(content['content'] or 'null') or {}).get('title','')
     # Orchestration stays active while it is advancing an automatic workflow.
     if content and run['status'] not in ('queued','running') and run['stage']=='content':
         run['status']=content['status']
@@ -142,6 +144,18 @@ def listing(deleted=False):
             value['run_count']=c.execute('SELECT count(*) FROM task_runs WHERE task_id=?',(value['id'],)).fetchone()[0]
             result.append(value)
     return result
+
+
+def records():
+    """Public record summaries, excluding deleted tasks and private settings."""
+    with db.connect() as c:
+        result=[]
+        for row in c.execute('SELECT * FROM creation_tasks WHERE id NOT IN (SELECT task_id FROM deleted_tasks)').fetchall():
+            task=decode(row)
+            for run in runs(c,task):
+                result.append({**{k:run[k] for k in ('id','task_id','action','status','created_at','content_id')},
+                               'title':run.get('title',''),'task_name':task['name'],'kind':task['kind'],'archived':bool(task['archived'])})
+    return sorted(result,key=lambda r:(r['created_at'],r['id']),reverse=True)
 
 
 def delete(ident,version):

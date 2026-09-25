@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 200" fill="none">
+  <style>
+    .firefly{animation:float 8s ease-in-out infinite}.two{animation-delay:-2s}.three{animation-delay:-4s}.four{animation-delay:-6s}.halo{animation:breathe 8s ease-in-out infinite}
+    @keyframes float{0%,100%{transform:translate(0,0);opacity:.5}50%{transform:translate(10px,-14px);opacity:1}}@keyframes breathe{0%,100%{opacity:.15}50%{opacity:.45}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+  </style>
+  <path fill="#25372f" d="M0 0h480v200H0z"/>
+  <path d="M103 181V76a137 137 0 0 1 274 0v105" fill="#30473a"/>
+  <circle cx="285" cy="53" r="22" fill="#c6d0aa"/><circle cx="294" cy="47" r="20" fill="#30473a"/>
+  <g stroke="#607456" stroke-width="2" stroke-linecap="round"><path d="M80 185q30-44 14-94M91 150q-19-15-25-38M94 135q18-13 28-43M372 186q-11-60 15-114M376 134q-16-20-18-36M374 157q21-8 33-29"/></g>
+  <path d="M162 149c29-12 56-6 77 3v35c-28-13-53-15-77-5Zm78 3c26-14 52-16 78-6v35c-32-7-53-2-78 6Z" fill="#bdc4a2" stroke="#8a9a77" stroke-width="1.6"/>
+  <path d="m239 155 1 28M176 157q25-5 46 3M176 168q24-3 43 4M255 158q22-8 45-4M255 169q23-7 44-5" stroke="#7a8c70" stroke-width="1.2"/>
+  <g class="firefly"><circle class="halo" cx="170" cy="77" r="12" fill="#d9d78e"/><circle cx="170" cy="77" r="2.6" fill="#ece6a4"/></g>
+  <g class="firefly two"><circle class="halo" cx="258" cy="113" r="10" fill="#d9d78e"/><circle cx="258" cy="113" r="2" fill="#ece6a4"/></g>
+  <g class="firefly three"><circle class="halo" cx="327" cy="92" r="11" fill="#d9d78e"/><circle cx="327" cy="92" r="2.5" fill="#ece6a4"/></g>
+  <g class="firefly four"><circle class="halo" cx="213" cy="42" r="8" fill="#d9d78e"/><circle cx="213" cy="42" r="1.8" fill="#ece6a4"/></g>
+</svg>

@@ -45,7 +45,7 @@ def current():
 
 def public(data=None):
     data=data if data is not None else current()
-    return {**{k:v for k,v in data.items() if k in ('name','base_url','model','protocol','output_mode','origin')},
+    return {**{k:v for k,v in data.items() if k in ('name','base_url','model','protocol','output_mode','origin','image_edit')},
             'key_configured':bool(data.get('api_key')),
             'ready':bool(data.get('api_key') and data.get('model'))}
 

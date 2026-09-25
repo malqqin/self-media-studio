@@ -39,8 +39,8 @@ def public_addresses(url):
     return addresses
 
 
-def fetch_public(url, limit=3_000_000):
-    with httpx.Client(timeout=httpx.Timeout(25, connect=12), follow_redirects=False, trust_env=False) as client:
+def fetch_public(url, limit=3_000_000, *, timeout=25):
+    with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(12,timeout)), follow_redirects=False, trust_env=False) as client:
         for _ in range(5):
             addresses = public_addresses(url)
             original = httpx.URL(url)

@@ -54,7 +54,8 @@ class ModelConnection(BaseModel):
     name: str = Field(default='自定义模型', min_length=1, max_length=60)
     base_url: str = Field(default='https://api.openai.com/v1', max_length=2000)
     model: str = Field(default='', max_length=150)
-    protocol: Literal['responses', 'chat_completions'] = 'responses'
+    protocol: Literal['responses', 'chat_completions', 'images'] = 'responses'
+    image_edit: bool = False
     output_mode: Literal['json_schema', 'json_object', 'text'] = 'json_schema'
     api_key: str = Field(default='', max_length=4096, repr=False)
     clear_key: bool = False
@@ -71,7 +72,7 @@ class ModelConnection(BaseModel):
             if p.port is not None and not 1<=p.port<=65535:raise ValueError()
         except ValueError:
             raise ValueError('接口地址需为 HTTPS；本机模型可用 HTTP。不要在网址中填写密钥。') from None
-        for suffix in ('/chat/completions','/responses'):
+        for suffix in ('/chat/completions','/responses','/images/generations','/images/edits'):
             if value.endswith(suffix):value=value[:-len(suffix)]
         return value
 

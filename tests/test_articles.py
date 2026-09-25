@@ -50,6 +50,68 @@ def draft(client, **kwargs):
     return advance(client,article,'generate')
 
 
+def revise_context(client,article,**changes):
+    return client.put(f'/api/articles/{article["id"]}/context',json={'version':article['version'],'subject':'古城旅行的新方向','brief':'围绕真实建筑细节展开，不使用旧的职场案例','mode':'original','notes':'','topic_ids':[],'action':'save',**changes})
+
+
+def test_context_edit_preserves_document_and_restores_original_sources_and_brief(client):
+    article=draft(client,notes='这是旧版本的个人参考笔记，恢复时也应当与文章一起恢复。')
+    revised=revise_context(client,article,notes='新版本参考笔记：沿着街巷介绍建筑的材料与空间特点。',query='平遥 建筑').json()
+    assert revised['document']==article['document'] and revised['outline']==article['outline']
+    assert revised['input_data']['_subject']=='古城旅行的新方向' and revised['input_data']['query']=='平遥 建筑'
+    assert revised['source_data'][0]['text'].startswith('新版本参考笔记')
+    assert revised['checks'] is None and revised['version']==article['version']+1
+    assert revise_context(client,article).status_code==409
+    restored=client.post(f'/api/articles/{article["id"]}/restore',json={'version':revised['version'],'target_version':article['version']}).json()
+    assert restored['source_data']==article['source_data']
+    assert restored['input_data']==article['input_data'] and restored['document']==article['document']
+    # Save-only leaves the selected angle valid for the existing generate action.
+    saved=revise_context(client,restored).json()
+    generated=advance(client,saved,'generate',replace_existing=True)
+    assert generated['status'] in ('needs_review','needs_revision')
+
+
+@pytest.mark.parametrize('action,final_status',[('angles','needs_angle'),('outline','needs_outline'),('article','needs_review')])
+def test_context_regeneration_uses_new_brief_and_sources_without_creating_article(client,monkeypatch,action,final_status):
+    original=draft(client);seen=[]
+    def angles(profile,brief,sources,ident):
+        seen.append((brief,sources,ident))
+        return Angles(choices=[Angle(title='新选题的建筑观察',angle='从屋檐和门窗理解建筑细节',reason='提供具体的旅行观察方式')])
+    monkeypatch.setattr(article_ai,'angles',angles)
+    response=revise_context(client,original,action=action,notes='本次参考笔记只用于新主题，请围绕建筑细节独立组织正文。')
+    assert response.status_code==200,response.text
+    queued=response.json();assert queued['stage']=='replan' and queued['document']==original['document']
+    worker.run(original['id']);result=worker.get(original['id'])
+    assert result['status']==final_status and result['id']==original['id']
+    assert len(client.get('/api/articles').json())==1
+    assert '古城旅行的新方向' in seen[0][0] and '旧的职场案例' in seen[0][0]
+    assert seen[0][1][0]['text'].startswith('本次参考笔记')
+    assert result['angles']['choices'][0]['title']=='新选题的建筑观察'
+    if action in ('angles','outline'):assert result['document'] is None
+    if action=='outline':assert advance(client,result,'generate')['status']=='needs_review'
+    assert any(v['version']==original['version'] for v in client.get(f'/api/articles/{original["id"]}').json()['versions'])
+
+
+def test_context_generation_failure_keeps_existing_body_and_can_retry(client,monkeypatch):
+    original=draft(client);writer=article_ai.document
+    def fail(*args):raise ValueError('simulated model interruption')
+    monkeypatch.setattr(article_ai,'document',fail)
+    queued=revise_context(client,original,action='article').json();worker.run(original['id'])
+    failed=worker.get(original['id']);assert failed['status']=='failed' and failed['stage']=='replan'
+    assert failed['document']==original['document'] and failed['outline']==original['outline']
+    monkeypatch.setattr(article_ai,'document',writer)
+    retried=advance(client,failed,'retry');assert retried['status']=='needs_review'
+
+
+def test_context_validates_sources_and_rejects_busy_or_stale_writes(client):
+    original=draft(client)
+    assert revise_context(client,original,mode='reference').status_code==422
+    assert revise_context(client,original,topic_ids=['missing']).status_code==400
+    assert worker.get(original['id'])['version']==original['version']
+    queued=revise_context(client,original,action='angles').json()
+    assert revise_context(client,queued).status_code==409
+
+
 def test_original_flow_profile_snapshot_versions_and_restore(client):
     profile=client.get('/api/article-profile').json()
     profile.update(direction='职场效率',audience='刚入职的年轻人',length=400)
@@ -245,11 +307,14 @@ def test_each_template_exports_safe_complete_content_and_images():
         soup=BeautifulSoup(rendered,'html.parser');template=article_templates.get_template(ident)
         assert not soup.select('script,style') and soup.h1.get_text()==doc['title']
         assert soup.select_one('[data-article-template]')['data-article-template']==ident
-        assert len(soup.select('img'))==2 and soup.figcaption.get_text()==doc['sections'][0]['caption']
+        assert len(soup.select('figure img'))==2 and soup.figcaption.get_text()==doc['sections'][0]['caption']
+        decoration=soup.select_one('img[data-template-decoration]')
+        assert bool(decoration)==bool(template['decoration'])
+        if decoration:assert decoration['src'].startswith('data:image/'+('svg+xml' if template.get('animated') else 'png')+';base64,')
         assert doc['opening'] in soup.get_text() and doc['closing'] in soup.get_text()
         assert ('01' in soup.h2.get_text())==template['numbered']
         appearances.add(soup.h1['style'])
-    assert len(appearances)==6
+    assert len(appearances)==len(article_templates.TEMPLATES)==24
     assert 'data-article-template="classic"' in article_export.html_body(doc)
     assert ArticleDocument.model_validate(doc).template_id=='classic'
 
@@ -265,7 +330,8 @@ def test_wechat_layout_keeps_all_text_images_and_colors_without_inline_heading_b
         rendered=BeautifulSoup(article_export.html_body(doc,{'inline':'https://mmbiz.qpic.cn/example.jpg'},wechat=True),'html.parser')
         assert not rendered.select('h2 span'), 'WeChat blocks inline heading badges during paste'
         assert rendered.h2['style']==original.h2['style']
-        assert rendered.select_one('img')['src']==original.select_one('img')['src']
+        assert rendered.select_one('figure img')['src']==original.select_one('figure img')['src']
+        assert not rendered.select('img[src^="data:"]')
         assert rendered.h1.get_text()==doc['title']
         assert doc['opening'] in rendered.get_text() and doc['closing'] in rendered.get_text()
         for section in doc['sections']:
@@ -274,6 +340,34 @@ def test_wechat_layout_keeps_all_text_images_and_colors_without_inline_heading_b
         if article_templates.get_template(ident)['numbered']:
             assert rendered.h2.get_text().startswith('01 · ')
             assert original.select('h2 span'), 'Local template exports retain their badges'
+
+
+def test_new_templates_save_restore_and_export_portable_decorations(client):
+    from backend import article_templates,article_export,wechat_delivery
+    from typing import get_args
+    from backend.article_models import ArticleTemplate
+    from bs4 import BeautifulSoup
+    from PIL import Image
+    assert set(get_args(ArticleTemplate))==set(article_templates.TEMPLATES)
+    article=draft(client);path='/api/articles/'+article['id']
+    for ident in ('cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight'):
+        original=article['document']
+        response=client.put(path+'/document',json={'version':article['version'],'document':{**original,'template_id':ident}})
+        assert response.status_code==200,response.text
+        article=response.json();assert article['document']['title']==original['title']
+        ornament=article_templates.decoration_id(article['document'])
+        with zipfile.ZipFile(io.BytesIO(client.get(path+'/export?format=bundle').content)) as archive:
+            soup=BeautifulSoup(archive.read('article.html'),'html.parser')
+            assert json.loads(archive.read('article.json'))['template_id']==ident
+            for image in soup.select('img'):
+                assert image['src'] in archive.namelist()
+                with Image.open(io.BytesIO(archive.read(image['src']))) as picture:assert picture.width>=400
+            assert bool(soup.select('img'))==bool(ornament)
+        if ornament:
+            with Image.open(io.BytesIO(wechat_delivery.image_bytes(ornament))) as picture:assert picture.format=='JPEG'
+            rendered=article_export.html_body(article['document'],{ornament:'https://mmbiz.qpic.cn/decoration.jpg'},wechat=True)
+            assert 'https://mmbiz.qpic.cn/decoration.jpg' in rendered and 'data:image' not in rendered
+    assert article_templates.decoration_path('../../private') is None
 
 
 def test_link_import_reuses_safe_collector_and_keeps_manual_fallback(client,monkeypatch):
@@ -545,6 +639,45 @@ def test_broken_stream_never_returns_success_or_raw_provider_errors(client,monke
     transport.close()
 
 
+@pytest.mark.parametrize('protocol',['chat_completions','responses'])
+@pytest.mark.parametrize('case,expected,usage_status',[
+    ('timeout','等待模型响应超时','timeout'),
+    ('connection','模型连接失败或中断','unknown'),
+    ('http','HTTP 429','http_error'),
+    ('interrupted','模型流式连接提前中断','stream_interrupted'),
+    ('provider','模型服务返回流式生成错误','stream_error'),
+    ('schema','不符合所需 JSON 格式','invalid_output'),
+    ('malformed','非 JSON 内容','invalid_response'),
+])
+def test_rewrite_failure_reports_safe_specific_reason_and_preserves_original(client,monkeypatch,protocol,case,expected,usage_status):
+    import httpx
+    from backend import ai_stream
+    article=draft(client);original=article['document'];calls=[]
+    connection={'name':'test','model':'test','api_key':'test-private','base_url':'https://example.com/v1','protocol':protocol,'output_mode':'json_object'}
+    assert client.put('/api/model-config',json=connection).status_code==200
+    def respond(request):
+        calls.append(request)
+        if case=='timeout':raise httpx.ReadTimeout('do-not-echo-private-token',request=request)
+        if case=='connection':raise httpx.ConnectError('do-not-echo-private-token',request=request)
+        if case=='http':return httpx.Response(429,text='do-not-echo-private-token')
+        if case=='malformed':return httpx.Response(200,text='do-not-echo-private-token')
+        if case=='schema':
+            answer='{"wrong_field":"do-not-echo-private-token"}'
+            result={'choices':[{'message':{'content':answer},'finish_reason':'stop'}]} if protocol=='chat_completions' else {'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':answer}]}]}
+            return httpx.Response(200,json=result)
+        packet={'error':{'message':'do-not-echo-private-token'}} if case=='provider' else {'choices':[],'type':'response.created'}
+        return httpx.Response(200,headers={'content-type':'text/event-stream'},text='data: '+json.dumps(packet)+'\n\n')
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        monkeypatch.setattr(ai_stream.httpx,'stream',transport.stream)
+        result=advance(client,article,'rewrite',target='opening',instruction='开头写得具体一点')
+    assert result['status']=='failed' and result['stage']=='section'
+    assert expected in result['error'] and '已保存的大纲和正文保留' in result['error']
+    assert 'do-not-echo-private-token' not in json.dumps(result) and 'test-private' not in json.dumps(result)
+    assert result['document']==original and len(calls)==1
+    with db.connect() as c:
+        assert c.execute('SELECT status FROM ai_usage WHERE job_id=? ORDER BY id DESC LIMIT 1',(article['id'],)).fetchone()[0]==usage_status
+
+
 def test_article_event_endpoint_replays_current_preview_then_finishes(client,monkeypatch):
     from backend import article_stream
     from backend.ai_stream import stream_sink
@@ -556,3 +689,54 @@ def test_article_event_endpoint_replays_current_preview_then_finishes(client,mon
     assert response.headers['content-type'].startswith('text/event-stream')
     assert 'event: snapshot' in response.text and '正在写的标题' in response.text and 'event: complete' in response.text
     assert client.get('/api/articles/missing/events').status_code==404
+
+
+def test_edit_angle_preserves_body_requires_fresh_version_and_rebuilds_selected_outline(client):
+    original=draft(client);path='/api/articles/'+original['id']
+    angle={'title':'换一个具体问题','angle':'解释日常场景中容易忽略的细节','reason':'让读者理解新的观察方法'}
+    saved=client.put(path+'/angles',json={'version':original['version'],'choice':0,'angle':angle})
+    assert saved.status_code==200,saved.text
+    value=saved.json()
+    assert value['document']==original['document'] and value['outline']==original['outline']
+    assert value['angles']['choices'][0]==angle and value['input_data']['_angle_outline_stale']
+    assert client.put(path+'/angles',json={'version':original['version'],'choice':0,'angle':angle}).status_code==409
+    rebuilt=advance(client,value,'angle',choice=0,replace_existing=True)
+    assert not rebuilt['input_data'].get('_angle_outline_stale') and rebuilt['document'] is None
+    restored=client.post(path+'/restore',json={'version':rebuilt['version'],'target_version':original['version']}).json()
+    assert restored['angles']==original['angles'] and restored['document']==original['document']
+
+
+@pytest.mark.parametrize('choice',[0,None])
+def test_regenerate_angles_uses_instruction_preserves_text_and_handles_retry(client,monkeypatch,choice):
+    original=draft(client);path='/api/articles/'+original['id'];seen=[]
+    with db.connect() as c:
+        choices=original['angles']['choices']*2
+        worker.update(c,original['id'],angles=db.dump({'choices':choices}))
+    def fail(*args):raise ValueError('simulated interruption')
+    monkeypatch.setattr(article_ai,'angles',fail)
+    queued=client.post(path+'/angles/regenerate',json={'version':original['version'],'choice':choice,'instruction':'从读者误解切入'}).json()
+    worker.run(original['id']);failed=worker.get(original['id'])
+    assert failed['status']=='failed' and failed['document']==original['document'] and failed['angles']['choices']==choices
+    def generate(profile,brief,sources,ident):
+        seen.append(brief)
+        return Angles(choices=[{'title':'从一个常见误解开始','angle':'解释一个常见误解背后的原因','reason':'帮助读者理解实际问题'}])
+    monkeypatch.setattr(article_ai,'angles',generate)
+    value=advance(client,failed,'retry')
+    assert '从读者误解切入' in seen[0]
+    assert value['document']==original['document'] and value['outline']==original['outline']
+    assert value['angles']['choices'][0]['title']=='从一个常见误解开始'
+    assert len(value['angles']['choices'])==(2 if choice==0 else 1)
+    assert value['input_data']['_angle_outline_stale']
+    if choice==0:assert value['angles']['choices'][1]==choices[1]
+
+
+def test_angle_only_history_can_be_restored_and_invalid_choice_is_rejected(client):
+    original=create(client);worker.run(original['id']);original=worker.get(original['id']);path='/api/articles/'+original['id']
+    body={'version':original['version'],'choice':4,'angle':original['angles']['choices'][0]}
+    assert client.put(path+'/angles',json=body).status_code==400
+    body.update(choice=0,angle={**body['angle'],'title':'手动修改后的角度'})
+    saved=client.put(path+'/angles',json=body).json()
+    assert client.get(path).json()['versions'][1]['restorable']
+    restored=client.post(path+'/restore',json={'version':saved['version'],'target_version':original['version']})
+    assert restored.status_code==200,restored.text
+    assert restored.json()['status']=='needs_angle' and restored.json()['angles']==original['angles']

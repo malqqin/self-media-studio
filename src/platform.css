@@ -304,3 +304,32 @@
 #science-fieldnotes .publication-result small{display:block;color:var(--ss-muted);line-height:1.8;margin:8px 0 16px}
 #science-fieldnotes .publication-result details{font-size:12px;margin-top:16px}
 #science-fieldnotes .publication-error{color:#9e493d}
+
+/* Stats share one counting scope; scheduled tasks are a subset of all tasks. */
+#science-fieldnotes .studio-stats{gap:16px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+#science-fieldnotes .studio-stats>button{display:flex;align-items:center;gap:18px;text-align:left;border:1px solid transparent;border-radius:12px;padding:16px;color:var(--ss-ink);background:transparent;cursor:pointer;min-width:0}
+#science-fieldnotes .studio-stats>button:hover{border-color:var(--ss-line);background:var(--ss-soft)}
+#science-fieldnotes .studio-stats>button>span{font-size:13px;line-height:1.8}
+#science-fieldnotes .studio-stats small{display:block;color:var(--ss-muted);font-size:11px}
+#science-fieldnotes .studio-stats svg{margin-left:auto;width:16px;flex:none;color:var(--ss-muted)}
+#science-fieldnotes .task-card-actions{justify-content:space-between;gap:12px;align-items:center}
+#science-fieldnotes .task-records-trigger{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+#science-fieldnotes .task-filters>select{font:inherit;font-size:12px;color:var(--ss-ink);border:1px solid var(--ss-line);border-radius:7px;padding:10px;background:var(--ss-paper);max-width:100%}
+#science-fieldnotes .task-history-layout.workspace-focused{display:block}
+#science-fieldnotes .work-records-trigger{padding:8px 12px;font-size:12px}
+#science-fieldnotes .creation-records-list{display:grid;gap:12px}
+#science-fieldnotes .creation-record-row{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:1px solid var(--ss-line);border-radius:12px;padding:20px;background:var(--ss-paper);color:var(--ss-ink);cursor:pointer;min-width:0}
+#science-fieldnotes .creation-record-row:hover,#science-fieldnotes .creation-record-row[aria-pressed=true]{background:var(--ss-soft);border-color:var(--ss-accent)}
+#science-fieldnotes .record-number{font:22px Georgia,serif;color:var(--ss-muted);flex:none}
+#science-fieldnotes .record-description{display:flex;flex:1;min-width:0;flex-direction:column;gap:7px;overflow-wrap:anywhere}
+#science-fieldnotes .record-description strong{font-size:14px;font-weight:500}
+#science-fieldnotes .record-description small{font-size:11px;line-height:1.7;color:var(--ss-muted)}
+#science-fieldnotes .creation-record-row>.ss-badge,#science-fieldnotes .creation-record-row>svg{flex:none}
+.notification-popup{position:relative;overflow:hidden;animation:notice-enter .2s ease-out both}
+.notification-popup.is-leaving{animation:notice-leave .24s ease-in both;pointer-events:none}
+.notification-countdown{position:absolute;left:0;top:0;width:100%;height:3px;background:currentColor;opacity:.55;transform-origin:left;animation:notice-countdown 3s linear both}
+@keyframes notice-countdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@keyframes notice-enter{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes notice-leave{to{opacity:0;transform:translateY(-8px)}}
+@media(prefers-reduced-motion:reduce){.notification-popup,.notification-popup.is-leaving{animation:none}.notification-popup.is-leaving{opacity:0}.notification-countdown{display:none}}
+@media(max-width:760px){#science-fieldnotes .studio-stats{gap:6px}#science-fieldnotes .studio-stats>button{gap:5px;padding:10px 6px;flex-direction:column;align-items:flex-start}#science-fieldnotes .studio-stats>button>span{font-size:11px}#science-fieldnotes .studio-stats small{font-size:9px}#science-fieldnotes .studio-stats svg{display:none}#science-fieldnotes .creation-record-row{padding:14px;gap:10px}#science-fieldnotes .creation-record-row>svg{display:none}#science-fieldnotes .work-records-trigger{font-size:11px}}

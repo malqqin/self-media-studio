@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator, field_valida
 from .network import public_url
 from .article_formats import ARTICLE_FORMATS
 
-ArticleTemplate = Literal['classic','tech','travel','guide','opinion','minimal']
+ArticleTemplate = Literal['classic','tech','travel','guide','opinion','minimal','cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight','breeze','tide','orbit','firefly','rain','petal']
 
 
 class TextModel(BaseModel):
@@ -86,6 +86,7 @@ class ArticleSection(TextModel):
     evidence: list[Evidence] = Field(default_factory=list, max_length=8)
     image_hint: str = Field(default='', max_length=500)
     asset_id: str = Field(default='', max_length=64)
+    image_locked: bool = False
     caption: str = Field(default='', max_length=300)
 
 
@@ -99,6 +100,8 @@ class ArticleDocument(TextModel):
     closing: str = Field(default='', max_length=3000)
     cover_hint: str = Field(default='', max_length=500)
     cover_asset_id: str = Field(default='', max_length=64)
+    cover_image_locked: bool = False
+    cover_caption: str = Field(default='',max_length=1000)
 
     @model_validator(mode='after')
     def bounded_size(self):
@@ -120,6 +123,43 @@ class ArticleCheck(TextModel):
 
 class ArticleVersion(TextModel):
     version: int = Field(ge=1)
+
+
+class EditAngle(ArticleVersion):
+    choice: int = Field(ge=0,le=4)
+    angle: Angle
+
+
+class RegenerateAngles(ArticleVersion):
+    choice: int | None = Field(default=None,ge=0,le=4)
+    instruction: str = Field(default='',max_length=2000)
+
+
+class EditArticleContext(ArticleVersion):
+    subject: str = Field(default='',max_length=160)
+    brief: str = Field(default='',max_length=2000)
+    mode: Literal['original','reference'] = 'original'
+    topic_ids: list[Annotated[str,Field(min_length=1,max_length=120)]] = Field(default_factory=list,max_length=5)
+    notes: str = Field(default='',max_length=20000)
+    query: str = Field(default='',max_length=100)
+    search_scope: Literal['web','wechat'] = 'wechat'
+    max_age_days: Literal[0,7,30,90,365] = 30
+    action: Literal['save','angles','outline','article'] = 'save'
+
+    @model_validator(mode='after')
+    def valid_context(self):
+        self.topic_ids=list(dict.fromkeys(self.topic_ids))
+        if not self.subject and not self.brief:raise ValueError('请填写本次选题或写作要求。')
+        if self.mode=='reference' and not self.topic_ids and len(self.notes)<20:
+            raise ValueError('参考创作需要选择资料，或提供至少 20 字的参考笔记。')
+        return self
+
+
+class CollectArticleContext(ArticleVersion):
+    brief: str = Field(min_length=1,max_length=2200)
+    query: str = Field(min_length=2,max_length=100)
+    search_scope: Literal['web','wechat'] = 'wechat'
+    max_age_days: Literal[0,7,30,90,365] = 30
 
 
 class ChooseAngle(ArticleVersion):

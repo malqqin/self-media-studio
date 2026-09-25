@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from PIL import Image, ImageOps
 from . import db, article_export, wechat_accounts
 from .media import asset_path
+from .article_templates import decoration_path
 
 lock = threading.RLock()
 
@@ -47,9 +48,11 @@ def update(run_id,status,data,error=None):
 
 
 def image_bytes(ident):
-    with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=?',(ident,)).fetchone()
-    if not row or not row['media_type'].startswith('image/'):raise ValueError('请为自动发布选择有效的默认封面图片。')
-    path=asset_path(dict(row))
+    path=decoration_path(ident)
+    if not path:
+        with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=?',(ident,)).fetchone()
+        if not row or not row['media_type'].startswith('image/'):raise ValueError('请为自动发布选择有效的默认封面图片。')
+        path=asset_path(dict(row))
     if not path.is_file():raise ValueError('所选发布图片文件不存在，请重新上传。')
     with Image.open(path) as original:
         picture=ImageOps.exif_transpose(original).convert('RGB');picture.thumbnail((1600,1600))
@@ -59,13 +62,24 @@ def image_bytes(ident):
     raise ValueError('发布图片压缩后仍然过大，请选择较小的图片。')
 
 
+def inline_image(ident):
+    """Preserve our bounded GIFs for body uploads; cover thumbnails remain JPEG."""
+    path=decoration_path(ident)
+    if path and path.suffix=='.gif':
+        content=path.read_bytes()
+        if len(content)>=1_000_000:raise ValueError('模板动图文件过大，请更换模板。')
+        return ident+'.gif',content,'image/gif'
+    return ident+'.jpg',image_bytes(ident),'image/jpeg'
+
+
 def validate(settings):
     delivery=settings.wechat_delivery
     if delivery.mode=='local':return
     account=wechat_accounts.require_ready(delivery.account_id,delivery.mode)
     if account.get('channel')=='browser' and delivery.mode!='handoff' and len(delivery.author)>8:
         raise ValueError('公众号网页版署名最多 8 字，请缩短署名。')
-    if delivery.mode!='handoff' or delivery.cover_asset_id:image_bytes(delivery.cover_asset_id)
+    generated_cover=settings.illustration.enabled and settings.illustration.cover
+    if delivery.cover_asset_id or (delivery.mode!='handoff' and not generated_cover):image_bytes(delivery.cover_asset_id)
 
 
 def _prepare(run_id,article,settings):
@@ -76,6 +90,7 @@ def _prepare(run_id,article,settings):
     if delivery.mode=='publish' and (not article.get('checks') or any(i['severity']=='error' for i in article['checks']['issues'])):
         raise ValueError('文章检查存在未解决的问题，已保留本地正文，未自动发布。请修订并完成检查后重试。')
     doc=article['document']
+    if delivery.mode!='handoff':image_bytes(doc.get('cover_asset_id') or delivery.cover_asset_id)
     if len(doc['title'])>32:raise ValueError('微信标题不能超过 32 字，请缩短标题并完成检查后重试。')
     if len(doc['summary'])>120:raise ValueError('微信摘要不能超过 120 字，请缩短摘要并完成检查后重试。')
     data={'account_name':account['name'],'appid':account['appid'],'article_version':article['version'],
@@ -116,15 +131,23 @@ def deliver(run_id,article,settings):
             if not data.get('media_id'):
                 update(run_id,'preparing',data)
                 doc=data['document']
-                ids=list(dict.fromkeys([data['cover_asset_id'],doc.get('cover_asset_id')]+[s.get('asset_id') for s in doc['sections']]))
+                body_ids=article_export.body_image_ids(doc)
+                ids=list(dict.fromkeys([data['cover_asset_id'],*body_ids]))
                 for ident in filter(None,ids):
-                    content=image_bytes(ident)
                     if ident==data['cover_asset_id'] and not data.get('thumb_media_id'):
+                        content=image_bytes(ident)
                         result=wechat_accounts.call(account,'material/add_material',params={'type':'image'},files={'media':('cover.jpg',content,'image/jpeg')})
                         if not result.get('media_id'):raise ValueError('微信未返回封面素材编号。')
                         data['thumb_media_id']=result['media_id'];update(run_id,'preparing',data)
-                    if ident not in data['images'] and (ident==doc.get('cover_asset_id') or any(s.get('asset_id')==ident for s in doc['sections'])):
-                        result=wechat_accounts.call(account,'media/uploadimg',files={'media':('image.jpg',content,'image/jpeg')})
+                    if ident not in data['images'] and ident in body_ids:
+                        media=inline_image(ident)
+                        # uploadimg accepts only JPG/PNG. GIFs use the permanent
+                        # image material endpoint, which returns a Tencent-hosted URL.
+                        if media[2]=='image/gif':
+                            result=wechat_accounts.call(account,'material/add_material',params={'type':'image'},files={'media':media})
+                            if not result.get('media_id'):raise ValueError('微信未返回动图素材编号。')
+                            data.setdefault('animation_media',{})[ident]=result['media_id']
+                        else:result=wechat_accounts.call(account,'media/uploadimg',files={'media':media})
                         if urlsplit(result.get('url','')).scheme not in ('https','http'):raise ValueError('微信未返回有效的正文图片地址。')
                         data['images'][ident]=result['url'];update(run_id,'preparing',data)
                 body=article_export.html_body(doc,data['images'],wechat=True)

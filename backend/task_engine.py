@@ -17,6 +17,10 @@ executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='studio-tasks')
 def validated(settings, kind, action='automatic'):
     if action=='blank':return
     if action!='blank' and not model_library.ready(settings.model_id):raise ValueError('请选择一个已配置的模型，或先到“我的模型”添加。')
+    if model_library.current(settings.model_id).get('protocol')=='images':raise ValueError('请为文字创作选择文字模型，图片模型在配图配置中单独选择。')
+    if kind=='article':
+        from .article_pictures import validate
+        validate(settings.illustration)
     materials=settings.materials
     if materials.discover and not (materials.query or settings.brief or settings.article.direction):raise ValueError('联网查找需要关键词或内容方向。')
     if materials.mode=='reference' and not (materials.urls or materials.topic_ids or materials.discover or len(materials.notes)>=20):raise ValueError('请配置参考网址、联网查找关键词、已有资料或至少 20 字笔记。')
@@ -64,7 +68,7 @@ def blank_article(task,settings,ids,request_id):
         title=settings.brief[:100] or task['name']
         doc=ArticleDocument(template_id=settings.article.template_id,title=title,titles=[title],summary='填写文章摘要',sections=[{'heading':'第一个观点','paragraphs':['在这里开始写作。']}])
         outline=ArticleOutline(title=title,angle='手动创作',sections=[{'heading':'第一个观点','points':'填写主要观点'}])
-        inp={'mode':settings.materials.mode,'brief':settings.brief,'notes':settings.materials.notes,'topic_ids':ids,'request_id':request_id,'_model_id':settings.model_id}
+        inp={'mode':settings.materials.mode,'brief':settings.brief,'notes':settings.materials.notes,'topic_ids':ids,'request_id':request_id,'_model_id':settings.model_id,'_illustration':settings.illustration.model_dump()}
         c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,outline,document,created_at,updated_at,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (ident,request_id,'draft','review',100,settings.materials.mode,1,settings.article.model_dump_json(),db.dump(inp),db.dump(source_data),outline.model_dump_json(),doc.model_dump_json(),now,now,'手动草稿已创建，可以开始编辑。'))
         article_worker.snapshot(c,ident,'创建手动草稿')
@@ -124,7 +128,7 @@ def run(ident):
                         if settings.materials.mode=='reference':
                             method={'facts':'以参考资料提供事实依据，独立组织文章。','structure':'先理解参考文章的叙事结构、开头钩子、信息顺序与结尾方式，再围绕本次主题独立写成新文章；不能逐句替换、拼接原文或照搬特有案例和表达。','tone':'参考文章的句长、节奏、语气与段落密度，围绕本次主题独立创作；不冒充原作者，不照搬特色措辞、经历或引语。'}[settings.materials.reference_style]
                             profile.preferences=('参考方式：'+method+'\n'+profile.preferences)[:2000]
-                        content=article_worker.create(inp,submit=False,profile_override=profile,model_id=settings.model_id)
+                        content=article_worker.create(inp,submit=False,profile_override=profile,model_id=settings.model_id,illustration=settings.illustration)
                 elif task['kind']=='video':
                     notes=settings.materials.notes
                     if blank and len(settings.brief+notes)<20:notes='手动视频草稿：请在编辑器中填写自己的文案、选择素材并核对内容依据。'

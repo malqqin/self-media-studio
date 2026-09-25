@@ -2,6 +2,7 @@
 from contextvars import ContextVar
 import json
 import httpx
+from .model_errors import ModelRequestError
 
 stream_sink = ContextVar('article_stream_sink', default=None)
 
@@ -12,7 +13,7 @@ def streamed_result(url, headers, payload, chat, emit):
     answer = ''; usage = {}; finish = None; terminal = None
     with httpx.stream('POST', url, headers=headers, json=payload,
                       timeout=httpx.Timeout(150, connect=15), follow_redirects=False) as response:
-        if 300 <= response.status_code < 400:raise ValueError('接口返回重定向，请填写最终 API 地址后再试。')
+        if 300 <= response.status_code < 400:raise ModelRequestError('接口返回重定向，请填写最终 API 地址后再试。')
         response.raise_for_status()
         if 'text/event-stream' not in response.headers.get('content-type', ''):
             # Some compatible gateways ignore stream=true and send one JSON object.
@@ -26,36 +27,36 @@ def streamed_result(url, headers, payload, chat, emit):
                     lines = []; size = 0
                 elif line.startswith('data:'):
                     value = line[5:].lstrip(); size += len(value)
-                    if size > 300000:raise ValueError('模型流式消息过长，未保存为成稿。')
+                    if size > 300000:raise ModelRequestError('模型流式消息过长，未保存为成稿。')
                     lines.append(value)
             if lines:yield '\n'.join(lines)
         for raw in events():
             if raw == '[DONE]':break
             event = json.loads(raw)
-            if not isinstance(event, dict):raise ValueError('模型流式响应格式不兼容。')
+            if not isinstance(event, dict):raise ModelRequestError('模型流式响应格式不兼容。')
             if event.get('error') or event.get('type') in ('error','response.failed'):
-                raise ValueError('模型流式生成失败，已保存内容保留，请检查模型连接后重试。')
+                raise ModelRequestError('模型服务返回流式生成错误，请稍后重试或检查服务商状态。','stream_error')
             delta = ''
             if chat:
                 usage = event.get('usage') or usage
                 choice = next((v for v in event.get('choices', []) if v.get('index',0)==0), None)
                 if choice:
                     delta = (choice.get('delta') or {}).get('content') or ''
-                    if (choice.get('delta') or {}).get('refusal'):raise ValueError('模型未返回可用内容。')
+                    if (choice.get('delta') or {}).get('refusal'):raise ModelRequestError('模型未返回可用内容。')
                     finish = choice.get('finish_reason') or finish
             else:
                 if event.get('type') == 'response.output_text.delta':delta = event.get('delta','')
                 if event.get('type') in ('response.completed','response.incomplete'):
                     terminal = event['response']; break
             if delta:
-                if not isinstance(delta, str):raise ValueError('模型流式文字格式不兼容。')
+                if not isinstance(delta, str):raise ModelRequestError('模型流式文字格式不兼容。')
                 answer += delta
-                if len(answer) > 240000:raise ValueError('模型输出过长，未保存为成稿。')
+                if len(answer) > 240000:raise ModelRequestError('模型输出过长，未保存为成稿。')
                 emit(answer, False)
     if chat:
-        if finish is None:raise ValueError('模型流式连接提前中断，未覆盖已保存内容，请重试。')
+        if finish is None:raise ModelRequestError('模型流式连接提前中断，未取得完整结果，请稍后重试。','stream_interrupted')
         return {'choices':[{'finish_reason':finish,'message':{'content':answer}}], 'usage':usage}
-    if terminal is None:raise ValueError('模型流式连接提前中断，未覆盖已保存内容，请重试。')
+    if terminal is None:raise ModelRequestError('模型流式连接提前中断，未取得完整结果，请稍后重试。','stream_interrupted')
     if not terminal.get('output') and answer:
         terminal['output']=[{'type':'message','content':[{'type':'output_text','text':answer}]}]
     return terminal

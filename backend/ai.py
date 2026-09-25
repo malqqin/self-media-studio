@@ -4,10 +4,7 @@ import httpx
 
 from . import config, db
 from .models import Script, Curation, FactCheck
-
-
-class ModelOutputLimitError(ValueError):
-    """Known, safe-to-display reason for an incomplete model response."""
+from .model_errors import ModelRequestError, ModelOutputLimitError
 
 
 def normalize(text):
@@ -38,7 +35,8 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
     from .model_library import connection as selected_connection
     connection=connection or selected_connection()
     if not connection['model'] or not connection['api_key']:
-        raise ValueError('请到“我的模型”配置模型，并在任务中选择。')
+        raise ModelRequestError('请到“我的模型”配置模型，并在任务中选择。')
+    if connection.get('protocol')=='images':raise ModelRequestError('当前选择的是图片模型，请为文字创作选择文字模型。')
     schema=strict_schema(model_class.model_json_schema())
     # Compatibility mode still validates the returned JSON against the same local schema.
     instructions+='\n只返回 JSON 对象，不要 Markdown。必须符合此 JSON Schema：'+json.dumps(schema,ensure_ascii=False)
@@ -60,6 +58,9 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
         c.execute('BEGIN IMMEDIATE')
         reservation=c.execute('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (?,?,?,?,?)',
                               (job_id,db.day(),kind,'reserved',db.now())).lastrowid
+    def failure(message,code):
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',(code,reservation))
+        return ModelRequestError(message,code)
     try:
         # No redirects, retries, or silent protocol fallbacks carrying credentials.
         sink=stream_sink.get()
@@ -72,10 +73,10 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
             response=httpx.post(connection['base_url'].rstrip('/')+suffix,
                 headers={'Authorization':'Bearer '+connection['api_key']},json=payload,
                 timeout=httpx.Timeout(150,connect=15),follow_redirects=False)
-            if 300<=response.status_code<400:raise ValueError('接口返回重定向，请填写最终 API 地址后再试。')
+            if 300<=response.status_code<400:raise ModelRequestError('接口返回重定向，请填写最终 API 地址后再试。')
             response.raise_for_status()
             result=response.json()
-        if not isinstance(result,dict):raise ValueError('接口没有返回有效 JSON 对象。')
+        if not isinstance(result,dict):raise ModelRequestError('接口没有返回有效 JSON 对象。')
         with db.connect() as c:
             usage=result.get('usage') or {}
             c.execute('UPDATE ai_usage SET status=?,input_tokens=?,output_tokens=? WHERE id=?',
@@ -84,32 +85,35 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
             choices=result.get('choices') or []
             if choices and choices[0].get('finish_reason')=='length':
                 raise ModelOutputLimitError('模型输出达到上限，内容被截断且未作为完整正文保存。请减少目标字数或使用输出额度更高的模型后重试。')
-            if not choices or choices[0].get('finish_reason') not in ('stop',None):raise ValueError('模型未完整返回结果，请检查输出限制。')
+            if not choices or choices[0].get('finish_reason') not in ('stop',None):raise ModelRequestError('模型未完整返回结果，请检查输出限制。')
             answer=choices[0].get('message',{}).get('content','')
         else:
             if result.get('status')=='incomplete' and (result.get('incomplete_details') or {}).get('reason')=='max_output_tokens':
                 raise ModelOutputLimitError('模型输出达到上限，内容被截断且未作为完整正文保存。请减少目标字数或使用输出额度更高的模型后重试。')
-            if result.get('status')!='completed':raise ValueError('模型未完整返回结果，请检查接口协议或输出限制。')
+            if result.get('status')!='completed':raise ModelRequestError('模型未完整返回结果，请检查接口协议或输出限制。')
             answer=''.join(content.get('text','') for out in result.get('output',[]) if out.get('type')=='message'
                      for content in out.get('content',[]) if content.get('type')=='output_text')
-        if not isinstance(answer,str):raise ValueError('模型未返回可解析的文字结果。')
+        if not isinstance(answer,str):raise ModelRequestError('模型未返回可解析的文字结果。')
         answer=re.sub(r'^```(?:json)?\s*|\s*```$','',answer.strip(),flags=re.IGNORECASE)
         if sink and kind.startswith('article_'):sink(kind,answer,True)
         try:return model_class.model_validate_json(answer)
-        except ValueError:raise ValueError('模型返回内容不符合所需 JSON 格式。请调整输出格式或更换模型。') from None
+        except ValueError:raise ModelRequestError('模型返回内容不符合所需 JSON 格式。请调整输出格式或更换模型。','invalid_output') from None
     except httpx.HTTPStatusError as error:
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',('http_error',reservation))
         status=error.response.status_code
         hint={401:'密钥无效或未授权',403:'服务商拒绝访问',404:'接口路径或模型不存在',429:'额度不足或请求过多'}.get(status,'接口参数或服务异常')
-        raise ValueError(f'模型接口 HTTP {status}：{hint}。请检查地址、协议、模型和输出格式。') from None
+        raise failure(f'模型接口 HTTP {status}：{hint}。请检查地址、协议、模型和输出格式。','http_error') from None
+    except httpx.TimeoutException:
+        raise failure('等待模型响应超时，未自动重复请求。请稍后重试，或检查模型服务是否拥堵。','timeout') from None
     except httpx.RequestError:
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',('unknown',reservation))
-        raise ValueError('模型连接失败或超时，未自动重试。请检查接口地址与网络。') from None
+        raise failure('模型连接失败或中断，未自动重试。请检查接口地址与网络。','unknown') from None
     except (KeyError,TypeError,AttributeError,IndexError):
-        raise ValueError('接口响应不兼容，请检查协议和输出格式。') from None
+        raise failure('接口响应不兼容，请检查协议和输出格式。','invalid_response') from None
+    except ModelRequestError as error:
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',(error.code,reservation))
+        raise
     except ValueError as error:
         # A gateway may echo submitted secrets in malformed content; never return raw bodies.
-        if isinstance(error,json.JSONDecodeError):raise ValueError('接口返回了非 JSON 内容，请检查 API 地址。') from None
+        if isinstance(error,json.JSONDecodeError):raise failure('接口返回了非 JSON 内容，请检查 API 地址。','invalid_response') from None
         raise
 
 

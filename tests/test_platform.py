@@ -997,6 +997,21 @@ def test_wechat_uploads_inline_images_before_draft_and_preserves_snapshot(client
     assert '/api/assets/' not in payload['articles'][0]['content']
 
 
+def test_wechat_uploads_template_decoration_without_replacing_cover(client,wechat):
+    from bs4 import BeautifulSoup
+    prefs,calls,_=wechat
+    task=create(client)
+    task=save(client,task,brief='旅行文化',article={**task['settings']['article'],'template_id':'sage'},wechat_delivery={**prefs,'mode':'draft'})
+    run=execute(client,task,'automatic')
+    assert run['status']=='wechat_draft',run
+    assert [p for p,_ in calls]==['material/add_material','media/uploadimg','draft/add']
+    payload=next(v['payload'] for p,v in calls if p=='draft/add')
+    soup=BeautifulSoup(payload['articles'][0]['content'],'html.parser')
+    assert soup.select_one('img[data-template-decoration]')['src']=='https://mmbiz.qpic.cn/image.jpg'
+    assert payload['articles'][0]['thumb_media_id']=='cover-media'
+    assert soup.select_one('[data-article-template]')['data-article-template']=='sage'
+
+
 @pytest.mark.parametrize('phase',['drafting','submitting'])
 def test_wechat_crash_during_write_requires_reconciliation(client,wechat,phase):
     from backend import wechat_delivery
@@ -1088,7 +1103,7 @@ def test_wechat_browser_session_encryption_and_forget(client,monkeypatch):
     monkeypatch.setattr(wechat_browser,'os',SimpleNamespace(name='nt'))
     wechat_browser._save(ident,SimpleNamespace(storage_state=lambda:state),'https://mp.weixin.qq.com/cgi-bin/home?token=private-token')
     assert wechat_browser._load(ident)['storage']==state
-    assert 'private-token' not in (config.DATA/'wechat-accounts.json').read_text()
+    assert 'private-token' not in (config.DATA/'wechat-accounts.json').read_text(encoding='utf-8')
     public=client.get('/api/wechat/accounts').text
     assert 'cookie-private' not in public and 'protected_session' not in public and 'private-token' not in public
     assert client.get('/api/wechat/accounts').json()[0]['session_saved']
@@ -1144,6 +1159,41 @@ def connected_personal(client):
         values[account['id']].update(appid='wx1234567890abcdef',protected_session='test-encrypted-session',draft_ready=True)
         wechat_accounts.write(values)
     return account
+
+
+def test_revising_article_context_never_changes_schedule_run_snapshot_or_wechat_delivery(client,wechat,monkeypatch):
+    from backend import wechat_delivery
+    prefs,_,_=wechat
+    task=save(client,create(client),brief='旧的旅行方向',wechat_delivery={**prefs,'mode':'draft'})
+    run=execute(client,task,'automatic');original=article_worker.get(run['content_id'])
+    before=wechat_delivery.get(run['id'])['data'];settings_before=task_store.detail(task['id'])['settings']
+    body={'version':original['version'],'subject':'新的建筑观察','brief':'介绍屋檐与空间关系','action':'article'}
+    result=client.put('/api/articles/'+original['id']+'/context',json=body)
+    assert result.status_code==200,result.text
+    article_worker.run(original['id'])
+    assert wechat_delivery.get(run['id'])['data']==before
+    assert task_store.detail(task['id'])['settings']==settings_before
+    with db.connect() as c:
+        stored=json.loads(c.execute('SELECT settings FROM task_runs WHERE id=?',(run['id'],)).fetchone()['settings'])
+        assert stored['brief']==run['settings']['brief']
+        c.execute("UPDATE task_runs SET status='publishing' WHERE id=?",(run['id'],))
+    latest=article_worker.get(original['id'])
+    blocked=client.put('/api/articles/'+original['id']+'/context',json={**body,'version':latest['version'],'action':'save'})
+    assert blocked.status_code==409 and '交付' in blocked.text
+
+
+def test_article_context_search_uses_current_form_without_rewriting_saved_task(client,monkeypatch):
+    task=save(client,create(client),brief='旧主题',materials={'mode':'original','query':'旧关键词','discover':False,'urls':[],'topic_ids':[],'notes':''})
+    run=execute(client,task,'automatic');article=article_worker.get(run['content_id']);seen=[]
+    def collect(ident,settings):
+        seen.append(settings.model_dump());return [],[{'source':'搜索','status':'success','count':0,'items':[]}]
+    monkeypatch.setattr(task_sources,'collect',collect)
+    response=client.post('/api/articles/'+article['id']+'/context/collect',json={'version':article['version'],'brief':'新主题：平遥建筑','query':'平遥 建筑','max_age_days':7,'search_scope':'wechat'})
+    assert response.status_code==200,response.text
+    assert seen[0]['brief']=='新主题：平遥建筑' and seen[0]['materials']['query']=='平遥 建筑'
+    assert seen[0]['materials']['max_age_days']==7 and seen[0]['materials']['discover']
+    assert task_store.detail(task['id'])['settings']['materials']['query']=='旧关键词'
+    assert article_worker.get(article['id'])['version']==article['version']
 
 
 def test_personal_browser_draft_dispatch_and_unknown_write_protection(client,wechat,monkeypatch):
@@ -1209,3 +1259,22 @@ def test_browser_identity_cannot_change_and_urls_are_encrypted(client):
     assert 'private-token' not in encrypted and wechat_browser_delivery.unseal(encrypted)==url
     with pytest.raises(ValueError):wechat_browser_delivery.unseal(wechat_browser_delivery.seal('https://evil.example/'))
     with pytest.raises(ValueError,match='尚未完成验证'):wechat_accounts.require_ready(ident,'publish')
+
+
+def test_record_counts_include_scheduled_and_archived_but_exclude_deleted_tasks(client):
+    manual=save(client,create(client,name='手动任务'),brief='日常工具的使用方法')
+    scheduled=save(client,create(client,name='定时任务'),execution='automatic',brief='日常工具的使用方法')
+    first=execute(client,manual,'automatic')
+    execute(client,scheduled,'automatic');execute(client,scheduled,'automatic')
+    listing=client.get('/api/tasks').json();records=client.get('/api/task-records').json()
+    assert len(listing)==2 and sum(t['run_count'] for t in listing)==len(records)==3
+    assert sum(t['settings']['execution']=='automatic' for t in listing)==1
+    assert {r['task_name'] for r in records}=={'手动任务','定时任务'}
+    assert all('settings' not in r and 'publication' not in r for r in records)
+    archived=client.post('/api/tasks/'+scheduled['id']+'/archive',json={'version':scheduled['version']})
+    assert archived.status_code==200
+    records=client.get('/api/task-records').json()
+    assert len(records)==3 and sum(r['archived'] for r in records)==2
+    assert client.request('DELETE','/api/tasks/'+manual['id'],json={'version':manual['version']}).status_code==200
+    records=client.get('/api/task-records').json()
+    assert len(records)==2 and not any(r['id']==first['id'] for r in records)

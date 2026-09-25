@@ -19,7 +19,7 @@ from .media import MAX_UPLOAD, store_asset, asset_path
 from .article_routes import router as article_router
 from . import article_worker
 from .platform_routes import router as platform_router
-from . import task_store, task_engine
+from . import task_store, task_engine, pictures
 
 async def scheduler_loop(stop: asyncio.Event):
     while not stop.is_set():
@@ -31,7 +31,8 @@ async def scheduler_loop(stop: asyncio.Event):
 
 @asynccontextmanager
 async def lifespan(app):
-    db.init();task_store.init();worker.recover();article_worker.recover();task_engine.recover();stop=asyncio.Event()
+    db.init();pictures.init()
+    task_store.init();worker.recover();article_worker.recover();pictures.recover();task_engine.recover();stop=asyncio.Event()
     with db.connect() as c:
         c.execute("UPDATE daily_runs SET status='attention',message=? WHERE status='running'",('采集期间服务中断；请手动采集并选择制作。',))
     task=asyncio.create_task(scheduler_loop(stop))
@@ -243,7 +244,9 @@ def get_artifact(job_id: str,kind: str):
 
 @app.get('/api/assets')
 def list_assets():
-    with db.connect() as c:return [{k:v for k,v in dict(r).items() if k!='path'} for r in c.execute('SELECT * FROM assets ORDER BY at DESC')]
+    with db.connect() as c:
+        rows=c.execute('SELECT a.*,p.data AS provenance FROM assets a LEFT JOIN asset_provenance p ON p.asset_id=a.id ORDER BY a.at DESC')
+        return [{**{k:v for k,v in dict(r).items() if k not in ('path','provenance')},'provenance':json.loads(r['provenance']) if r['provenance'] else {'kind':'upload'}} for r in rows]
 
 
 @app.post('/api/assets',status_code=201)

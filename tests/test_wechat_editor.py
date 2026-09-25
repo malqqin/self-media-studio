@@ -20,7 +20,10 @@ def browser():
 def editor(browser,monkeypatch):
     context=browser.new_context(permissions=['clipboard-read','clipboard-write'])
     page=context.new_page()
+    # Like WeChat's editor, keep an empty body visible and editable after an
+    # uploaded image is cleared; a zero-height mock loses Chromium's caret.
     page.route('http://localhost/editor*',lambda route:route.fulfill(content_type='text/html; charset=utf-8',body='''
+        <style>.view .ProseMirror{min-height:100px}</style>
         <div class="title-editor__input"><div class="ProseMirror" contenteditable="true"></div></div>
         <input id="author"><textarea id="js_description"></textarea>
         <div class="view rich_media_content"><div class="ProseMirror" contenteditable="true"><p>旧正文</p></div></div>
@@ -49,6 +52,37 @@ def test_native_paste_replaces_old_body_keeps_rich_style_and_all_paragraphs(edit
     expect(editor.locator(adapter.BODY)).not_to_contain_text('旧正文')
     expect(editor.locator(adapter.BODY+' h2')).to_contain_text('01 · 抬头看屋檐')
     assert 'color' in editor.locator(adapter.BODY+' h2').get_attribute('style')
+
+
+@pytest.mark.parametrize('template',['cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight','breeze','tide','orbit','firefly','rain','petal'])
+def test_new_template_paste_verifies_decorations_and_text(editor,document,template):
+    from backend.article_templates import decoration_id
+    document['template_id']=template
+    ornament=decoration_id(document)
+    paths={ornament:'https://mmbiz.qpic.cn/decoration.jpg'} if ornament else {}
+    editor.route('https://mmbiz.qpic.cn/*',lambda route:route.fulfill(status=200,content_type='image/svg+xml',body='<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"/>'))
+    adapter.paste(editor,article_export.html_body(document,paths,wechat=True))
+    adapter.verify_body(editor,document)
+    expect(editor.locator(adapter.BODY+' h1')).to_have_text(document['title'])
+
+
+def test_browser_upload_keeps_gif_file_then_pastes_complete_body(editor,document):
+    from backend.article_templates import decoration_path
+    document['template_id']='tide'
+    content=decoration_path('template-decoration-tide').read_bytes()
+    editor.route('https://mmbiz.qpic.cn/template.gif',lambda route:route.fulfill(content_type='image/gif',body=content))
+    editor.evaluate('''()=>{
+        const input=document.createElement('input');input.type='file';input.accept='image/svg+xml,image/gif';
+        input.addEventListener('change',()=>{
+            window.uploaded={name:input.files[0].name,type:input.files[0].type,size:input.files[0].size};
+            const image=document.createElement('img');image.src='https://mmbiz.qpic.cn/template.gif';
+            document.querySelector('.view .ProseMirror').append(image);
+        });document.body.append(input);
+    }''')
+    paths=adapter.fill_body(editor,{'document':document})
+    assert paths=={'template-decoration-tide':'https://mmbiz.qpic.cn/template.gif'}
+    assert editor.evaluate('window.uploaded')=={'name':'template-decoration-tide.gif','type':'image/gif','size':len(content)}
+    expect(editor.locator(adapter.BODY+' img')).to_have_attribute('src','https://mmbiz.qpic.cn/template.gif')
 
 
 def test_structural_dialog_is_explained_and_save_is_never_clicked(editor,document):

@@ -2,6 +2,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from .article_models import TextModel, ArticleProfile
 from .network import public_url
+from .picture_models import IllustrationSettings
 
 
 class MaterialSettings(TextModel):
@@ -66,6 +67,7 @@ class TaskSettings(TextModel):
     materials: MaterialSettings = Field(default_factory=MaterialSettings)
     article: ArticleProfile = Field(default_factory=ArticleProfile)
     article_plan: ArticlePlanning = Field(default_factory=ArticlePlanning)
+    illustration: IllustrationSettings = Field(default_factory=IllustrationSettings)
     wechat_delivery: WeChatDelivery = Field(default_factory=WeChatDelivery)
     video: VideoSettings = Field(default_factory=VideoSettings)
     image: ImageSettings = Field(default_factory=ImageSettings)

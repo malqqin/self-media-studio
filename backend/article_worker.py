@@ -5,8 +5,8 @@ import uuid
 import json
 import re
 from fastapi import HTTPException
-from . import db, config, article_ai, article_stream
-from .ai import ModelOutputLimitError
+from . import db, config, article_ai, article_stream, article_pictures
+from .ai import ModelOutputLimitError, ModelRequestError
 from .article_models import ArticleInput, ArticleProfile, Angle, ArticleOutline, ArticleDocument
 
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='studio-articles')
@@ -36,13 +36,13 @@ def update(c, article_id, **values):
 
 def snapshot(c, article_id, note):
     value = require(c, article_id)
-    payload = {key: value[key] for key in ('angles', 'outline', 'document', 'checks', 'input_data')}
+    payload = {key: value[key] for key in ('angles', 'outline', 'document', 'checks', 'input_data','source_data','mode')}
     payload['note'] = note
     c.execute('INSERT INTO article_versions(article_id,version,stage,payload,at) VALUES (?,?,?,?,?)',
               (article_id, value['version'], value['stage'], db.dump(payload), db.now()))
 
 
-def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=None):
+def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=None, illustration=None):
     with db.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         existing = c.execute('SELECT * FROM articles WHERE request_id=?', (body.request_id,)).fetchone()
@@ -75,6 +75,7 @@ def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=N
         now = db.now()
         input_data=body.model_dump()
         if model_id:input_data['_model_id']=model_id
+        if illustration is not None:input_data['_illustration']=illustration.model_dump()
         c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,created_at,updated_at,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (article_id, body.request_id, 'queued', 'angles', 5, body.mode, 1, db.dump(profile.model_dump()),
                    db.dump(input_data), db.dump(source_data), now, now, '正在准备写作角度。'))
@@ -94,6 +95,8 @@ def enqueue(article_id, version, action, *, choice=None, section=None, instructi
             raise ValueError('请先在“我的模型”配置连接，并在任务中选择。')
         inp = value['input_data']
         reset={}
+        if action in ('outline','article') and value['document']:
+            inp['_picture_previous']=value['document']
         if action == 'outline':
             choices = (value['angles'] or {}).get('choices', [])
             if choice is None or not 0 <= choice < len(choices):
@@ -102,11 +105,16 @@ def enqueue(article_id, version, action, *, choice=None, section=None, instructi
                 if not replace_existing:raise ValueError('重新选择角度会重新生成大纲与正文，请先确认；原有内容保留在版本记录中。')
                 reset=dict(outline=None,document=None,checks=None,version=version+1,progress=25)
             inp['angle_index'] = choice
+            inp.pop('_angle_outline_stale',None)
         elif action == 'article':
             if not value['outline']:raise ValueError('请先完成大纲。')
             if value['document']:
                 if not replace_existing:raise ValueError('重新生成正文需要先确认；原有正文保留在版本记录中。')
                 reset=dict(document=None,checks=None,version=version+1,progress=45)
+        elif action == 'illustrate':
+            if not value['document']:raise ValueError('还没有可配图的正文。')
+            if not inp.get('_illustration',{}).get('enabled'):raise ValueError('本次创作没有开启任务配图配置。')
+            inp.pop('_picture_plan',None);inp.pop('_picture_cycle',None)
         elif action == 'check':
             if not value['document']:
                 raise ValueError('还没有可检查的正文。')
@@ -153,6 +161,7 @@ def edit(article_id, version, *, outline_value=None, document_value=None, replac
         if outline_value is not None:
             if not value['outline']:raise ValueError('还没有可修改的大纲。')
             if value['document'] and not replace_existing:raise ValueError('修改大纲需要重新生成正文，请先确认；原有正文保留在版本记录中。')
+            if value['document']:fields['input_data']=db.dump({**value['input_data'],'_picture_previous':value['document']})
             fields['document']=None
             fields.update(outline=db.dump(outline_value.model_dump()), status='needs_outline', stage='outline', progress=45, note='大纲已保存，可生成正文。')
         if document_value is not None:
@@ -174,12 +183,13 @@ def restore(article_id, version, target_version):
         if not row:
             raise ValueError('历史版本不存在。')
         old = json.loads(row['payload'])
-        if not old.get('outline') and not old.get('document'):
-            raise ValueError('此版本还没有可恢复的大纲或正文。')
+        if not any(old.get(k) for k in ('angles','outline','document')):
+            raise ValueError('此版本还没有可恢复的内容。')
         update(c, article_id, version=version+1, document=db.dump(old['document']) if old['document'] else None,
                outline=db.dump(old['outline']), angles=db.dump(old['angles']), input_data=db.dump(old['input_data']),
-               checks=None, error=None, status='draft' if old['document'] else 'needs_outline',
-               stage='review' if old['document'] else 'outline', progress=100 if old['document'] else 45,
+               **({'source_data':db.dump(old['source_data']),'mode':old['mode']} if 'source_data' in old else {}),
+               checks=None, error=None, status='draft' if old['document'] else 'needs_outline' if old['outline'] else 'needs_angle',
+               stage='review' if old['document'] else 'outline' if old['outline'] else 'angles', progress=100 if old['document'] else 45 if old['outline'] else 25,
                note=f'已从 v{target_version} 恢复，原有历史保留。')
         snapshot(c, article_id, f'从 v{target_version} 恢复')
     return get(article_id)
@@ -210,25 +220,72 @@ def _run(article_id):
     try:
         profile = ArticleProfile.model_validate(value['profile'])
         inp = value['input_data']
-        brief = inp.get('brief', '')
+        brief = ('本次主题：'+inp['_subject']+'\n' if inp.get('_subject') else '')+inp.get('brief', '')
         sources = value['source_data']
         stage = value['stage']
-        if stage == 'angles':
+        if stage == 'angle_refresh':
+            request=inp['_angle_request'];choice=request['choice']
+            previous=(value['angles'] or {}).get('choices',[])
+            instruction=request['instruction'] or '换一种切入方式，避免重复原有角度。'
+            context=previous if choice is None else [previous[choice]]
+            prompt=brief+'\n本次调整要求：'+instruction+'\n原有候选（仅作修改参照）：'+db.dump(context)
+            if choice is not None:prompt+='\n仅给出 1 个修改后的角度。'
+            result=article_ai.angles(profile,prompt,sources,article_id).model_dump()
+            if choice is not None:
+                previous[choice]=result['choices'][0];result={'choices':previous}
+            if value['outline'] and (choice is None or choice==inp.get('angle_index',0)):inp['_angle_outline_stale']=True
+            if choice is None:inp['angle_index']=0
+            inp.pop('_angle_request',None)
+            finish(article_id,angles=db.dump(result),input_data=db.dump(inp),status='draft' if value['document'] else 'needs_outline' if value['outline'] else 'needs_angle',
+                   stage='review' if value['document'] else 'outline' if value['outline'] else 'angles',progress=100 if value['document'] else 45 if value['outline'] else 25,
+                   note='新的写作角度已生成。现有大纲和正文保留，选用新角度后可重建大纲。')
+        elif stage == 'replan':
+            action=inp['_context_action']
+            angles=article_ai.angles(profile,brief,sources,article_id)
+            if action=='angles':
+                finish(article_id,angles=db.dump(angles.model_dump()),outline=None,document=None,checks=None,status='needs_angle',stage='angles',progress=25,note='新选题的写作角度已生成，请选择后继续。')
+                return
+            with db.connect() as c:update(c,article_id,progress=30,note='已确定新的写作角度，正在重建大纲。')
+            selected=angles.choices[0]
+            outline=article_ai.outline(profile,brief,selected,sources,article_id)
+            if action=='outline':
+                finish(article_id,angles=db.dump(angles.model_dump()),outline=db.dump(outline.model_dump()),document=None,checks=None,status='needs_outline',stage='outline',progress=45,note='新选题的大纲已生成，确认后可继续写正文。')
+                return
+            with db.connect() as c:update(c,article_id,progress=50,note='新大纲已准备好，正在按新选题重写全文。')
+            doc=article_ai.document(profile,brief,selected,outline,sources,article_id)
+            doc.template_id=inp.get('_template_id', (value.get('document') or {}).get('template_id',profile.template_id))
+            doc=article_pictures.prepare(doc,value.get('document') or inp.get('_picture_previous'))
+            inp.pop('_picture_plan',None);inp.pop('_picture_cycle',None);inp.pop('_picture_previous',None)
+            if article_ai.unfinished_issues(doc):raise article_ai.ArticleContentError('重新生成的内容未通过成品检查，原有正文保留。请调整选题要求后重试。')
+            # Replace only after the new body is complete; failures during planning
+            # or generation leave the previous outline and document intact.
+            finish(article_id,angles=db.dump(angles.model_dump()),outline=db.dump(outline.model_dump()),document=db.dump(doc.model_dump()),input_data=db.dump(inp),checks=None,status='running',stage='illustrate',progress=75,note='新正文已保存，正在处理配图。')
+            doc,warnings=article_pictures.apply(article_id)
+            with db.connect() as c:update(c,article_id,stage='check',progress=85)
+            result=article_ai.check(doc,sources,article_id,brief=brief,profile=profile).model_dump()
+            result['issues']=article_ai.local_issues(doc,sources,profile.length)+result['issues']+[{'severity':'warning','section':0,'message':w} for w in warnings]
+            finish(article_id,status='needs_revision' if any(i['severity']=='error' for i in result['issues']) else 'needs_review',stage='review',progress=100,checks=db.dump(result),note='已按新选题完成创作，请核对事实与配图。')
+        elif stage == 'angles':
             result = article_ai.angles(profile, brief, sources, article_id)
             finish(article_id, status='needs_angle', progress=25, angles=db.dump(result.model_dump()), note='选择一个写作角度，接着生成大纲。')
         elif stage == 'outline':
             selected = Angle.model_validate(value['angles']['choices'][inp['angle_index']])
             result = article_ai.outline(profile, brief, selected, sources, article_id)
             finish(article_id, status='needs_outline', progress=45, outline=db.dump(result.model_dump()), note='大纲已保存，确认或编辑后生成正文。')
-        elif stage in ('article', 'section', 'check'):
+        elif stage in ('article', 'section', 'check', 'illustrate'):
+            warnings=[]
             if stage == 'article':
                 selected = Angle.model_validate(value['angles']['choices'][inp['angle_index']]) if value['angles'] else Angle(title=value['outline']['title'],angle=('按手动大纲展开：'+value['outline']['angle'])[:600],reason='根据已确认的大纲继续写作')
                 doc = article_ai.document(profile, brief, selected, ArticleOutline.model_validate(value['outline']), sources, article_id)
                 doc.template_id = inp.get('_template_id',profile.template_id)
-                doc.cover_asset_id = ''
-                for section in doc.sections:
-                    section.asset_id = ''
-                finish(article_id, document=db.dump(doc.model_dump()), status='running', stage='check', progress=80, note='正文已保存，正在核对依据。')
+                doc=article_pictures.prepare(doc,inp.get('_picture_previous'))
+                inp.pop('_picture_plan',None);inp.pop('_picture_cycle',None);inp.pop('_picture_previous',None)
+                finish(article_id, document=db.dump(doc.model_dump()),input_data=db.dump(inp), status='running', stage='illustrate', progress=75, note='正文已保存，正在处理配图。')
+                doc,warnings=article_pictures.apply(article_id)
+                with db.connect() as c:update(c,article_id,stage='check',progress=85)
+            elif stage == 'illustrate':
+                doc,warnings=article_pictures.apply(article_id)
+                with db.connect() as c:update(c,article_id,stage='check',progress=85)
             elif stage == 'section':
                 doc = ArticleDocument.model_validate(value['document'])
                 rewrite = inp['_rewrite']
@@ -238,6 +295,7 @@ def _run(article_id):
                     revised.asset_id = doc.sections[index].asset_id
                     revised.caption = doc.sections[index].caption
                     revised.image_hint = doc.sections[index].image_hint
+                    revised.image_locked = doc.sections[index].image_locked
                     doc.sections[index] = revised
                 else:
                     revised=article_ai.rewrite_part(profile,brief,doc,rewrite,sources,article_id).text
@@ -251,14 +309,18 @@ def _run(article_id):
             else:
                 doc = ArticleDocument.model_validate(value['document'])
             result = article_ai.check(doc, sources, article_id, brief=brief, profile=profile).model_dump()
-            result['issues'] = article_ai.local_issues(doc, sources, profile.length)+result['issues']
+            result['issues'] = article_ai.local_issues(doc, sources, profile.length)+result['issues']+[{'severity':'warning','section':0,'message':w} for w in warnings]
             finish(article_id, status='needs_revision' if any(i['severity']=='error' for i in result['issues']) else 'needs_review',
                    stage='review', progress=100, checks=db.dump(result), note='检查完成，请核对事实、配图与排版后导出。')
         else:
             raise ValueError('无法继续此写作步骤。')
-    except (ModelOutputLimitError, article_ai.ArticleContentError) as error:
+    except (ModelOutputLimitError, article_ai.ArticleContentError, article_pictures.IllustrationError) as error:
         with db.connect() as c:
-            update(c, article_id, status='failed', error=str(error), note='内容未通过成品检查；已保存内容和历史版本保留。' if isinstance(error,article_ai.ArticleContentError) else '模型输出被截断；此前保存的角度、大纲和正文保留。')
+            note='配图已暂停，已完成的正文和图片保留。' if isinstance(error,article_pictures.IllustrationError) else '内容未通过成品检查；已保存内容和历史版本保留。' if isinstance(error,article_ai.ArticleContentError) else '模型输出被截断；此前保存的角度、大纲和正文保留。'
+            update(c, article_id, status='failed', error=str(error), note=note)
+    except ModelRequestError as error:
+        with db.connect() as c:
+            update(c, article_id, status='failed', error=str(error)+' 已保存的大纲和正文保留。', note='模型请求未完成，文章任务已暂停。')
     except Exception:
         logging.exception('Article stage failed: %s', article_id)
         with db.connect() as c:

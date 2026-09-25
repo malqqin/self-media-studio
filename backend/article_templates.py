@@ -5,10 +5,26 @@ from pathlib import Path
 
 CATALOG=json.loads((Path(__file__).resolve().parents[1]/'shared/article-templates.json').read_text(encoding='utf-8'))
 TEMPLATES={item['id']:item for item in CATALOG['templates']}
+DECORATIONS={'template-decoration-'+item['decoration']:Path(__file__).resolve().parents[1]/'public/article-decorations'/ (item['decoration']+('.gif' if item.get('animated') else '.png'))
+             for item in TEMPLATES.values() if item.get('decoration')}
 
 
 def get_template(ident=None):
     return TEMPLATES.get(ident,TEMPLATES['classic'])
+
+
+def decoration_id(doc):
+    name=get_template(doc.get('template_id')).get('decoration')
+    return 'template-decoration-'+name if name else ''
+
+
+def decoration_path(ident):
+    return DECORATIONS.get(ident)
+
+
+def motion_paths(ident):
+    path=decoration_path(ident)
+    return {'svg':path.with_suffix('.svg'),'png':path.with_suffix('.png')} if path and path.suffix=='.gif' else {}
 
 
 def styles(ident=None):

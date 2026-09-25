@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 200" fill="none">
+  <style>
+    .orbit{transform-origin:240px 100px;animation:orbit 8s linear infinite}.counter{animation-direction:reverse}.glow{animation:glow 8s ease-in-out infinite}.late{animation-delay:-4s}
+    @keyframes orbit{to{transform:rotate(360deg)}}@keyframes glow{0%,100%{opacity:.3}50%{opacity:1}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+  </style>
+  <path fill="#1c273a" d="M0 0h480v200H0z"/>
+  <circle cx="240" cy="100" r="80" fill="#243248"/>
+  <g stroke="#5e7691" stroke-width="1"><ellipse cx="240" cy="100" rx="143" ry="54" transform="rotate(-16 240 100)"/><ellipse cx="240" cy="100" rx="92" ry="77" transform="rotate(35 240 100)"/><circle cx="240" cy="100" r="73" stroke-dasharray="2 8" opacity=".5"/></g>
+  <circle cx="240" cy="100" r="36" fill="#d4c5a5"/><path d="M253 66a36 36 0 0 1 0 68c-22-14-22-54 0-68Z" fill="#b8a788"/>
+  <path d="M217 88c14 6 34 6 47 0M213 106c18 6 40 6 55 0" stroke="#a69981" stroke-width="1.5" opacity=".5"/>
+  <g class="orbit"><circle cx="240" cy="27" r="5" fill="#87b7d3"/><circle cx="240" cy="27" r="10" fill="#87b7d3" opacity=".12"/></g>
+  <g class="orbit counter"><circle cx="240" cy="180" r="3" fill="#d6b87d"/></g>
+  <g class="glow" fill="#e2c992"><path d="m112 47 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z"/><circle cx="360" cy="140" r="2"/><circle cx="330" cy="41" r="1.5"/></g>
+  <g class="glow late" fill="#b4cadb"><path d="m373 79 1.5 5 5 1.5-5 1.5-1.5 5-1.5-5-5-1.5 5-1.5Z"/><circle cx="135" cy="143" r="2"/><circle cx="173" cy="29" r="1.5"/><circle cx="295" cy="165" r="2"/></g>
+</svg>

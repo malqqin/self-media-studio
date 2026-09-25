@@ -8,7 +8,7 @@ import asyncio
 import time
 from . import db, sources, article_worker as worker, article_export
 from .article_models import (ArticleProfile, ArticleInput, ArticleLink, ChooseAngle, EditOutline,
-                             EditArticle, ArticleVersion, RestoreArticle, RewriteSection, GenerateArticle)
+                             EditArticle, ArticleVersion, RestoreArticle, RewriteSection, GenerateArticle, EditArticleContext, CollectArticleContext, EditAngle, RegenerateAngles)
 
 router = APIRouter(prefix='/api')
 
@@ -96,7 +96,7 @@ def detail(article_id: str):
         article=worker.require(c,article_id)
         article['versions']=[{'version':r['version'],'stage':r['stage'],'at':r['at'],
                               'note':json.loads(r['payload']).get('note',''),
-                              'restorable':bool(json.loads(r['payload']).get('outline'))}
+                              'restorable':any(json.loads(r['payload']).get(k) for k in ('angles','outline','document'))}
                              for r in c.execute('SELECT * FROM article_versions WHERE article_id=? ORDER BY version DESC',(article_id,))]
     return article
 
@@ -104,6 +104,30 @@ def detail(article_id: str):
 @router.post('/articles/{article_id}/angle')
 def choose(article_id: str, body: ChooseAngle):
     return worker.enqueue(article_id,body.version,'outline',choice=body.choice,replace_existing=body.replace_existing)
+
+
+@router.put('/articles/{article_id}/context')
+def edit_context(article_id:str,body:EditArticleContext):
+    from . import article_context
+    return article_context.save(article_id,body)
+
+
+@router.put('/articles/{article_id}/angles')
+def edit_angle(article_id:str,body:EditAngle):
+    from . import article_angles
+    return article_angles.revise(article_id,body)
+
+
+@router.post('/articles/{article_id}/angles/regenerate')
+def regenerate_angles(article_id:str,body:RegenerateAngles):
+    from . import article_angles
+    return article_angles.revise(article_id,body,generate=True)
+
+
+@router.post('/articles/{article_id}/context/collect')
+def collect_context(article_id:str,body:CollectArticleContext):
+    from . import article_context
+    return article_context.collect(article_id,body)
 
 
 @router.put('/articles/{article_id}/outline')
@@ -124,6 +148,11 @@ def edit_document(article_id: str, body: EditArticle):
 @router.post('/articles/{article_id}/check')
 def check(article_id: str, body: ArticleVersion):
     return worker.enqueue(article_id,body.version,'check')
+
+
+@router.post('/articles/{article_id}/illustrate')
+def illustrate(article_id: str, body: ArticleVersion):
+    return worker.enqueue(article_id,body.version,'illustrate')
 
 
 @router.post('/articles/{article_id}/retry')
