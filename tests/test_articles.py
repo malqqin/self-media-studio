@@ -310,11 +310,11 @@ def test_each_template_exports_safe_complete_content_and_images():
         assert len(soup.select('figure img'))==2 and soup.figcaption.get_text()==doc['sections'][0]['caption']
         decoration=soup.select_one('img[data-template-decoration]')
         assert bool(decoration)==bool(template['decoration'])
-        if decoration:assert decoration['src'].startswith('data:image/'+('svg+xml' if template.get('animated') else 'png')+';base64,')
+        if decoration:assert decoration['src'].startswith('data:image/png;base64,')
         assert doc['opening'] in soup.get_text() and doc['closing'] in soup.get_text()
         assert ('01' in soup.h2.get_text())==template['numbered']
         appearances.add(soup.h1['style'])
-    assert len(appearances)==len(article_templates.TEMPLATES)==24
+    assert len(appearances)==len(article_templates.TEMPLATES)==18
     assert 'data-article-template="classic"' in article_export.html_body(doc)
     assert ArticleDocument.model_validate(doc).template_id=='classic'
 

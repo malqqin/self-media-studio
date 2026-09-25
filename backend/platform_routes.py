@@ -1,12 +1,13 @@
 import uuid
 from pydantic import BaseModel,Field
 from typing import Literal
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from . import db, config, model_library, task_store, task_engine, task_sources, image_studio, pictures
 from .models import ModelConnection
 from .task_models import CreateTask, EditTask, ExecuteTask, TaskSettings, EditImage
-from .picture_models import PictureSearch, PictureRequest
+from .picture_models import PictureSearch, PictureRequest, PictureSource
+from . import unsplash
 from .article_models import ArticleVersion
 from . import wechat_accounts, wechat_delivery, wechat_browser, article_export
 
@@ -14,14 +15,27 @@ router=APIRouter(prefix='/api')
 
 
 @router.get('/pictures/search')
-def picture_search(query: str,source: Literal['web','licensed']='web',details: bool=False):
+def picture_search(query: str,source: Literal['web','licensed']='web',details: bool=False,sources: list[PictureSource]|None=Query(default=None,max_length=6),page: int=Query(default=1,ge=1,le=50)):
     request=PictureSearch(query=query,source=source)
-    return pictures.search_report(request.query,request.source) if details else pictures.search(request.query,request.source)
+    return pictures.search_report(request.query,request.source,sources,page) if details else pictures.search(request.query,request.source,sources,page)
+
+
+@router.get('/picture-sources/unsplash')
+def unsplash_connection():return unsplash.public()
+
+
+@router.put('/picture-sources/unsplash')
+def unsplash_connect(body: unsplash.Connection):return unsplash.save(body)
 
 
 @router.post('/pictures')
 def picture_create(body: PictureRequest):
     return pictures.create(body)
+
+
+@router.get('/pictures/candidates/{ident}/preview')
+def picture_preview(ident: str):
+    return Response(pictures.preview(ident),media_type='image/jpeg')
 
 
 @router.get('/pictures/{ident}')
@@ -108,11 +122,24 @@ def edit_model(ident:str,body:ModelConnection):return model_library.save(body,id
 def test_new_model(body:ModelConnection):return probe(body)
 
 
+@router.post('/models/discover')
+def discover_new_models(body:ModelConnection):
+    from .model_directory import discover
+    return discover(model_library.resolve(body))
+
+
+@router.post('/models/{ident}/discover')
+def discover_saved_models(ident:str,body:ModelConnection):
+    from .model_directory import discover
+    return discover(model_library.resolve(body,ident))
+
+
 @router.post('/models/{ident}/test')
 def test_model(ident:str,body:ModelConnection):return probe(body,ident)
 
 
 def probe(body,ident=None):
+    if body.protocol == 'catalog':raise ValueError('该模型已作为目录保存，暂未接入其生成接口，不能执行生成测试。')
     if body.protocol == 'images':
         value=model_library.resolve(body,ident)
         if not value.get('api_key'):raise ValueError('请填写图片模型密钥。')

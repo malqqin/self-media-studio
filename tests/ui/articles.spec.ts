@@ -2,7 +2,14 @@ import {task as makeTask,models} from './fixtures';
 import { test, expect, type Page } from '@playwright/test';
 import type { Article, ArticleDocument, ArticleProfile, Topic } from '../../src/types';
 import {readFileSync} from 'node:fs';
-const templateCatalog=JSON.parse(readFileSync('shared/article-templates.json','utf8')) as {templates:{id:string;name:string;decoration:string;animated:boolean}[]};
+const templateCatalog=JSON.parse(readFileSync('shared/article-templates.json','utf8')) as {templates:{id:string;name:string;decoration:string}[]};
+
+async function openPicture(page:Page,tab='素材库'){
+  await page.getByRole('button',{name:'设置封面图片',exact:true}).click();
+  const drawer=page.getByRole('dialog');
+  await drawer.getByRole('button',{name:tab,exact:true}).click();
+  return drawer;
+}
 
 const profile:ArticleProfile={name:'效率手记',direction:'面向普通上班族的 AI 工作方法',audience:'刚开始尝试 AI 的上班族',style:'自然具体，避免夸张',length:1200,format:'教程',preferences:''};
 const document:ArticleDocument={title:'从一个小任务开始认识 AI',titles:['从一个小任务开始认识 AI','你的第一个 AI 工作流','先做好一件小事'],summary:'把抽象的能力，放进一个熟悉的工作场景。',opening:'面对一个新工具，我们往往先问它有多强。也许更值得问的是：我现在手头哪件事，可以用它试试看？',sections:[{heading:'从你熟悉的任务出发',paragraphs:['选一个你了解过程、也能判断结果的任务。比如整理一份自己的会议笔记，先列出关心的问题，再检查生成的内容。','第一次尝试，不必追求复杂的自动化。记录输入、输出和需要修改的地方，下次再做调整。'],evidence:[],image_hint:'桌面上的笔记本与一杯茶',asset_id:'',caption:''}],closing:'一个小任务，就是观察工具是否适合自己的起点。',cover_hint:'温暖的日常工作台，自然光',cover_asset_id:''};
@@ -80,7 +87,7 @@ test('all templates preview safely, filter, save and restore with history',async
   const state=await mockStudio(page,true);
   await page.goto('/#task/task-ui-test');
   await page.locator('.article-template-picker>summary').click();
-  await expect(page.getByRole('radio')).toHaveCount(24);
+  await expect(page.getByRole('radio')).toHaveCount(18);
   for(const {name,id,decoration} of templateCatalog.templates){
     await page.getByRole('radio',{name,exact:true}).check();
     await expect(page.locator('.phone-preview .article-layout')).toHaveAttribute('data-article-template',id);
@@ -90,8 +97,8 @@ test('all templates preview safely, filter, save and restore with history',async
   }
   await page.getByRole('button',{name:'自然纸感',exact:true}).click();await expect(page.getByRole('radio')).toHaveCount(4);
   await page.getByLabel('搜索排版模板').fill('不存在的风格');await expect(page.getByRole('radio')).toHaveCount(0);
-  await expect(page.locator('.template-current')).toContainText('花瓣信笺');
-  await page.getByRole('button',{name:'查看全部模板'}).click();await expect(page.getByRole('radio')).toHaveCount(24);
+  await expect(page.locator('.template-current')).toContainText('午夜电台');
+  await page.getByRole('button',{name:'查看全部模板'}).click();await expect(page.getByRole('radio')).toHaveCount(18);
   await page.getByLabel('搜索排版模板').fill('鼠尾草');await expect(page.getByRole('radio')).toHaveCount(1);
   await page.getByRole('radio',{name:'鼠尾草花园',exact:true}).check();
   await expect(page.getByRole('button',{name:'复制排版文字'})).toBeDisabled();
@@ -121,52 +128,11 @@ test('all templates preview safely, filter, save and restore with history',async
   }
 });
 
-test('motion templates preview pause and respect reduced motion without changing saved content',async({page},testInfo)=>{
-  const state=await mockStudio(page,true);await page.goto('/#task/task-ui-test');
-  await page.locator('.article-template-picker>summary').click();
-  await page.getByRole('button',{name:'轻盈动效',exact:true}).click();
-  await expect(page.getByRole('radio')).toHaveCount(6);
-  await page.getByRole('radio',{name:'林间微风',exact:true}).check();
-  const image=page.locator('.phone-preview .template-decoration');
-  await expect(image).toHaveAttribute('src','/article-decorations/breeze.svg');
-  await page.getByRole('button',{name:'暂停模板动效',exact:true}).click();
-  await expect(image).toHaveAttribute('src','/article-decorations/breeze.png');
-  await page.getByRole('button',{name:'播放模板动效',exact:true}).click();
-  await expect(image).toHaveAttribute('data-motion','playing');
-  await page.emulateMedia({reducedMotion:'reduce'});
-  await expect(image).toHaveAttribute('src','/article-decorations/breeze.png');
-  await expect(page.getByRole('button',{name:'播放模板动效'})).toBeDisabled();
-  await page.emulateMedia({reducedMotion:'no-preference'});
-  await expect(image).toHaveAttribute('src','/article-decorations/breeze.svg');
-  await page.getByRole('button',{name:'保存修改',exact:true}).click();
-  await expect.poll(()=>state.article?.document?.template_id).toBe('breeze');
-  expect(state.article?.document?.sections).toEqual(document.sections);
-  await page.reload();await expect(image).toHaveAttribute('src','/article-decorations/breeze.svg');
-  await page.setViewportSize({width:390,height:844});await page.locator('.phone-preview').scrollIntoViewIfNeeded();
-  await expect.poll(()=>page.locator('.phone-reading-area').evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
-  await expect.poll(()=>image.evaluate((img:HTMLImageElement)=>img.complete&&img.naturalWidth>0)).toBe(true);
-  await page.locator('.phone-preview').screenshot({path:testInfo.outputPath('motion-template-phone.png')});
-});
-
-test('six original SVG scenes animate in browser and stop for reduced motion',async({page},testInfo)=>{
-  for(const t of templateCatalog.templates.filter(t=>t.animated)){
-    await page.goto(`/article-decorations/${t.decoration}.svg`);
-    const count=await page.evaluate(()=>document.getAnimations().length);expect(count).toBeGreaterThan(0);
-    await page.evaluate(()=>document.getAnimations().forEach(a=>{a.pause();a.currentTime=0;}));
-    const first=await page.screenshot({animations:'allow'});
-    await page.evaluate(()=>document.getAnimations().forEach(a=>a.currentTime=4000));
-    const later=await page.screenshot({animations:'allow',path:testInfo.outputPath(`scene-${t.id}.png`)});
-    expect(first.equals(later)).toBe(false);
-    await page.emulateMedia({reducedMotion:'reduce'});await expect.poll(()=>page.evaluate(()=>document.getAnimations().length)).toBe(0);
-    await page.emulateMedia({reducedMotion:'no-preference'});
-  }
-});
-
 test('direction to outline to edited article, partial rewrite, versions and export',async({page},testInfo)=>{
   const state=await mockStudio(page);
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/#task/task-ui-test');
-  await page.locator('.account-preferences>summary').click();await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue(profile.direction,{timeout:12000});
+  await page.getByRole('button',{name:'配置写作偏好',exact:true}).click();await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue(profile.direction,{timeout:12000});await page.getByRole('button',{name:'完成设置'}).click();
   await page.screenshot({path:testInfo.outputPath('article-start.png'),fullPage:true});
   await page.getByRole('button',{name:'AI 辅助创作'}).click();
   await expect(page.locator('.angle-card')).toHaveCount(1,{timeout:12000});
@@ -491,18 +457,19 @@ test('web pictures show loading, source failures and Chinese results, then impor
   const candidate={id:'pic-bing',title:'平遥古城的城墙',url:'https://photos.example.com/original.jpg',preview_url:'https://photos.example.com/preview.jpg',page_url:'https://travel.example.com/pingyao',credit:'',license:'授权待核对',license_url:'',description:'',provider:'必应图片',license_verified:false};
   await page.route('https://photos.example.com/preview.jpg',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#c6b296"/><path d="M0 210h600v190H0Z" fill="#81766a"/><path d="M0 190h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v210H0Z" fill="#978774"/></svg>'}));
   await page.route('**/api/pictures/search?**',async route=>{
-    const params=new URL(route.request().url()).searchParams,source=params.get('source');
-    if(source==='licensed')return route.fulfill({json:{query:params.get('query'),source,items:[],providers:[{name:'Wikimedia Commons',status:'error',count:0},{name:'Openverse',status:'error',count:0}]}});
+    const params=new URL(route.request().url()).searchParams,source=params.get('source'),sources=params.getAll('sources');
+    if(sources.includes('commons'))return route.fulfill({json:{query:params.get('query'),source,items:[],providers:[{name:'Wikimedia Commons',status:'error',count:0},{name:'Openverse',status:'error',count:0}]}});
+    expect(sources).toEqual(['bing','360']);
     await waiting;return route.fulfill({json:{query:params.get('query'),source,items:[candidate],providers:[{name:'必应图片',status:'success',count:1}]}});
   });
   await page.route('**/api/pictures',async route=>{requests.push(route.request().postDataJSON());return route.fulfill({json:{id:'picture-import',status:'ready',asset:{id:'asset-import',filename:candidate.title,media_type:'image/jpeg',rights:'授权待核对',credit:'',source_url:candidate.page_url,provenance:{kind:'web',license:'授权待核对'}},error:null}});});
   await page.goto('/#task/task-ui-test');
-  const card=page.getByRole('region',{name:'封面图片',exact:true});await card.getByRole('button',{name:'联网找图'}).click();
-  const drawer=page.getByRole('dialog');await expect(page.getByLabel('搜索来源')).toHaveValue('web');
-  await page.getByLabel('图片搜索词').fill('平遥古城 城墙');await page.getByLabel('搜索来源').selectOption('licensed');await drawer.getByRole('button',{name:'搜索图片'}).click();
-  await expect(drawer.locator('.picture-search-error')).toContainText('可切换“必应图片”');await expect(drawer.locator('.picture-provider.error')).toHaveCount(2);
+  await openPicture(page,'联网找图');
+  const drawer=page.getByRole('dialog');await expect(page.getByRole('checkbox',{name:'必应图片',exact:true})).toBeChecked();
+  await page.getByLabel('图片搜索词').fill('平遥古城 城墙');await page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true}).check();await drawer.getByRole('button',{name:'搜索图片'}).click();
+  await expect(drawer.locator('.picture-search-error')).toContainText('更换搜索来源');await expect(drawer.locator('.picture-provider.error')).toHaveCount(2);
   await expect(drawer.locator('.picture-placeholder')).toHaveCount(0);
-  await page.getByLabel('搜索来源').selectOption('web');await drawer.getByRole('button',{name:'搜索图片'}).click();
+  await page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true}).uncheck();await drawer.getByRole('button',{name:'搜索图片'}).click();
   await expect(drawer.locator('.picture-search-status')).toBeVisible();await expect(drawer.getByRole('button',{name:'正在找图…'})).toBeDisabled();release();
   await expect(drawer.locator('.picture-result')).toHaveCount(1);await expect(drawer.locator('.picture-search-report')).toContainText('找到 1 张图片');
   await expect(drawer.locator('.picture-result img')).toHaveAttribute('src',candidate.preview_url);
@@ -514,6 +481,110 @@ test('web pictures show loading, source failures and Chinese results, then impor
   await drawer.getByRole('button',{name:'使用这张图片'}).click();await expect(drawer).toHaveCount(0);
   expect(requests[0]).toMatchObject({action:'import',candidate_id:'pic-bing'});
   await page.getByRole('button',{name:'保存修改',exact:true}).click();await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-import');expect(errors).toEqual([]);
+});
+
+test('picture previews recover from broken thumbnails, offer retry and keep Unsplash direct',async({page},testInfo)=>{
+  await mockStudio(page,true);
+  const candidates=['original','fallback','retry','unsplash'].map((name,i)=>({id:'pic-'+name,title:['可用的原图','备用预览','重新加载图片','Unsplash 摄影'][i],url:`https://photos.example.com/${name}.jpg`,preview_url:`https://photos.example.com/${name}-thumb.jpg`,page_url:'https://example.com/photo',credit:'',license:'待核对',license_url:'',provider:name==='unsplash'?'Unsplash':'必应图片'}));
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#bdcdae"/><path d="M0 400L260 50L600 400Z" fill="#567451"/></svg>';
+  let retryWorks=false;const proxyRequests:string[]=[];
+  await page.route('https://photos.example.com/**',route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path==='/original.jpg'||(path==='/retry-thumb.jpg'&&retryWorks))return route.fulfill({contentType:'image/svg+xml',body:svg});
+    return route.abort();
+  });
+  await page.route('**/api/pictures/candidates/*/preview',route=>{
+    const path=new URL(route.request().url()).pathname;proxyRequests.push(path);
+    return path.includes('pic-fallback')?route.fulfill({contentType:'image/svg+xml',body:svg}):route.fulfill({status:502,json:{detail:'unavailable'}});
+  });
+  await page.route('**/api/pictures/search?**',route=>route.fulfill({json:{items:candidates,query:'mountain',page:1,has_more:false,providers:[{name:'必应图片',status:'success',count:4}]}}));
+  await page.goto('/#task/task-ui-test');await openPicture(page,'联网找图');
+  const drawer=page.getByRole('dialog');await drawer.getByLabel('图片搜索词').fill('mountain');await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();
+  const original=drawer.getByRole('img',{name:'可用的原图',exact:true});
+  await expect(original).toHaveAttribute('src',candidates[0].url);await expect(original).toHaveClass('is-loaded');
+  await expect(drawer.getByRole('img',{name:'备用预览',exact:true})).toHaveAttribute('src','/api/pictures/candidates/pic-fallback/preview');
+  await expect(drawer.getByRole('img',{name:'备用预览',exact:true})).toHaveClass('is-loaded');
+  await drawer.locator('.picture-result').last().scrollIntoViewIfNeeded();
+  await expect(drawer.getByRole('button',{name:'重新加载预览：重新加载图片',exact:true})).toBeVisible();
+  await expect(drawer.getByRole('button',{name:'重新加载预览：Unsplash 摄影',exact:true})).toBeVisible();
+  expect(proxyRequests.some(url=>url.includes('pic-unsplash'))).toBe(false);
+  retryWorks=true;await drawer.getByRole('button',{name:'重新加载预览：重新加载图片',exact:true}).click();
+  await expect(drawer.getByRole('img',{name:'重新加载图片',exact:true})).toHaveClass('is-loaded');
+  await drawer.screenshot({path:testInfo.outputPath('picture-preview-recovery.png')});
+});
+
+test('picture pagination requests later results, caches pages and recovers from empty and failed pages',async({page},testInfo)=>{
+  await mockStudio(page,true);const calls:{query:string;page:number;sources:string[]}[]=[];let failures=0;
+  const candidate=(id:string)=>({id:'pic-'+id,title:'Mountain '+id,url:`https://photos.example.com/${id}.jpg`,page_url:'https://example.com/photo',credit:'',license:'待核对',license_url:'',provider:'360 图片'});
+  await page.route('https://photos.example.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#c1cbb5"/></svg>'}));
+  await page.route('**/api/pictures/search?**',route=>{
+    const params=new URL(route.request().url()).searchParams,n=Number(params.get('page'));
+    calls.push({query:params.get('query')!,page:n,sources:params.getAll('sources')});
+    if(n===4&&failures++===0)return route.fulfill({status:503,json:{detail:'服务暂不可用'}});
+    if(n===4&&failures===2)return route.fulfill({json:{query:'mountain',page:4,items:[],has_more:false,providers:[{name:'360 图片',status:'error',count:0,message:'连接超时'}]}});
+    const items=n===1?[candidate('first')]:n===2?[candidate('first'),candidate('second')]:n===3?[]:[candidate('last')];
+    return route.fulfill({json:{query:params.get('query'),items,page:n,has_more:n<4,providers:[{name:'360 图片',status:items.length?'success':'empty',count:items.length}]}});
+  });
+  await page.goto('/#task/task-ui-test');await openPicture(page,'联网找图');
+  const drawer=page.getByRole('dialog'),pager=drawer.getByRole('navigation',{name:'图片搜索分页顶部'});
+  await drawer.getByLabel('图片搜索词').fill('mountain');await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();
+  await expect(pager).toContainText('第 1 页');await expect(pager.getByRole('button',{name:'上一页'})).toBeDisabled();
+  await drawer.getByRole('navigation',{name:'图片搜索分页底部'}).getByRole('button',{name:'下一页'}).click();
+  await expect(pager).toContainText('第 2 页');await expect(drawer.locator('.picture-result')).toHaveCount(1);await expect(drawer.locator('.picture-result')).toContainText('Mountain second');
+  await expect(drawer.locator('.picture-search-report')).toContainText('已跳过前面页面出现过的 1 张图片');
+  await pager.getByRole('button',{name:'上一页'}).click();await expect(pager).toContainText('第 1 页');
+  await pager.getByRole('button',{name:'下一页'}).click();await expect(pager).toContainText('第 2 页');expect(calls.map(c=>c.page)).toEqual([1,2]);
+  await pager.getByRole('button',{name:'下一页'}).click();await expect(pager).toContainText('第 3 页');
+  await expect(drawer.locator('.picture-placeholder')).toContainText('本页没有新的匹配图片');await expect(pager.getByRole('button',{name:'下一页'})).toBeEnabled();
+  await pager.getByRole('button',{name:'下一页'}).click();await expect(drawer.locator('.picture-search-error')).toContainText('第 4 页查询失败');await expect(pager).toContainText('第 3 页');
+  await drawer.getByRole('button',{name:'重试第 4 页'}).click();await expect(drawer.locator('.picture-search-error')).toContainText('360 图片：连接超时');await expect(pager).toContainText('第 3 页');
+  await drawer.getByRole('button',{name:'重试第 4 页'}).click();await expect(pager).toContainText('第 4 页');await expect(pager.getByRole('button',{name:'下一页'})).toBeDisabled();
+  await expect(drawer.locator('.picture-result')).toContainText('Mountain last');
+  await drawer.screenshot({path:testInfo.outputPath('picture-pagination-desktop.png')});
+  await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await drawer.screenshot({path:testInfo.outputPath('picture-pagination-mobile.png')});
+  await drawer.getByLabel('图片搜索词').fill('city');await expect(pager).toHaveCount(0);await expect(drawer.locator('.picture-result')).toHaveCount(0);
+  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['bing','360']});
+  await drawer.getByRole('checkbox',{name:'必应图片',exact:true}).uncheck();await expect(pager).toHaveCount(0);
+  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['360']});
+});
+
+test('Unsplash connects once, searches with other providers and keeps photographer attribution',async({page},testInfo)=>{
+  const state=await mockStudio(page,true),writes:any[]=[],errors:string[]=[];let connected=false;
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.route('**/api/picture-sources/unsplash',async route=>{
+    if(route.request().method()==='PUT'){const body=route.request().postDataJSON();writes.push(body);connected=!body.clear_key;}
+    return route.fulfill({json:{key_configured:connected}});
+  });
+  const candidate={id:'pic-unsplash',title:'Mountain lake',url:'https://images.unsplash.com/photo-example?w=1080',preview_url:'https://images.unsplash.com/photo-example?w=400',page_url:'https://unsplash.com/photos/example?utm_source=self_media_studio&utm_medium=referral',author_url:'https://unsplash.com/@photographer?utm_source=self_media_studio&utm_medium=referral',credit:'Test Photographer',license:'Unsplash License',license_url:'https://unsplash.com/license',description:'Mountain lake',provider:'Unsplash',license_verified:true};
+  await page.route('https://images.unsplash.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#b5c8bc"/><path d="M0 500L250 100L550 500Z" fill="#627e72"/></svg>'}));
+  await page.route('**/api/pictures/search?**',route=>{
+    const params=new URL(route.request().url()).searchParams;
+    expect(params.getAll('sources')).toEqual(['bing','360','unsplash']);expect(params.get('query')).toBe('mountain');
+    return route.fulfill({json:{items:[candidate],providers:[{name:'Unsplash',status:'success',count:1}],query:'mountain',source:'web'}});
+  });
+  await page.route('**/api/pictures',route=>{
+    writes.push(route.request().postDataJSON());return route.fulfill({json:{id:'import-unsplash',status:'ready',asset:{id:'asset-unsplash',filename:candidate.title,media_type:'image/jpeg',rights:candidate.license,credit:candidate.credit,source_url:candidate.page_url,provenance:{kind:'web',license:candidate.license,author_url:candidate.author_url}}}});
+  });
+  await page.goto('/#task/task-ui-test');await openPicture(page,'联网找图');
+  const drawer=page.getByRole('dialog');await drawer.getByRole('checkbox',{name:'Unsplash',exact:true}).check();
+  await expect(drawer.locator('.unsplash-connection')).toContainText('待连接');await drawer.locator('.unsplash-connection summary').click();
+  await drawer.getByLabel('Unsplash Access Key').fill('test-access-key');await drawer.getByRole('button',{name:'验证并保存连接'}).click();
+  await expect(drawer.locator('.unsplash-connection')).toContainText('已配置');await expect(drawer.getByLabel('Unsplash Access Key')).toHaveValue('');
+  expect(writes[0]).toEqual({access_key:'test-access-key'});expect(JSON.stringify(state.task)).not.toContain('test-access-key');
+  await drawer.getByLabel('图片搜索词').fill('mountain');await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();
+  await expect(drawer.getByRole('link',{name:'Test Photographer',exact:true})).toHaveAttribute('href',candidate.author_url);
+  await expect(drawer.locator('.picture-result img')).toHaveAttribute('src',candidate.preview_url);
+  await drawer.screenshot({path:testInfo.outputPath('unsplash-desktop.png')});
+  await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await drawer.screenshot({path:testInfo.outputPath('unsplash-mobile.png')});
+  await drawer.getByRole('button',{name:'使用这张图片'}).click();await expect(drawer).toHaveCount(0);
+  expect(writes[1]).toMatchObject({action:'import',candidate_id:'pic-unsplash'});
+  await page.getByRole('button',{name:'保存修改',exact:true}).click();await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-unsplash');
+  await openPicture(page,'联网找图');
+  await expect(drawer.locator('.unsplash-connection')).toContainText('已配置');await drawer.locator('.unsplash-connection summary').click();
+  await drawer.getByRole('button',{name:'断开连接'}).click();await expect(drawer.locator('.unsplash-connection')).toContainText('待连接');
+  expect(errors).toEqual([]);
 });
 
 test('picture cards select, crop and generate locally, with locks and saved versions',async({page},testInfo)=>{
@@ -534,15 +605,18 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   });
   await page.goto('/#task/task-ui-test');
   const card=page.getByRole('region',{name:'封面图片',exact:true});
-  await card.getByRole('button',{name:'选择图片',exact:true}).click();
+  await openPicture(page);
   await page.getByRole('dialog').getByRole('button',{name:'古城实景 摄影作者'}).click();
   await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/asset-photo/file');
-  await card.getByLabel('图片说明与署名').fill('古城屋檐 · 摄影作者');
-  await card.getByRole('button',{name:'锁定位置'}).click();await expect(card.getByRole('button',{name:'裁剪',exact:true})).toBeDisabled();
+  const drawer=await openPicture(page);
+  await drawer.getByLabel('图片说明与署名').fill('古城屋檐 · 摄影作者');
+  await drawer.getByRole('button',{name:'锁定位置'}).click();await expect(drawer.getByRole('button',{name:'裁剪',exact:true})).toBeDisabled();
+  await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'保存修改',exact:true}).click();
   await expect.poll(()=>state.article!.document!.cover_image_locked).toBe(true);
-  await card.getByRole('button',{name:'已锁定'}).click();
-  await card.getByRole('button',{name:'裁剪',exact:true}).click();
+  await card.getByRole('button',{name:'设置封面图片',exact:true}).click();
+  await drawer.getByRole('button',{name:'已锁定'}).click();
+  await drawer.getByRole('button',{name:'裁剪',exact:true}).click();
   await expect(page.getByRole('dialog').getByRole('img',{name:'原图裁剪预览'})).toBeVisible();
   await page.getByLabel('裁剪比例').selectOption('1');
   await page.getByRole('button',{name:'保存裁剪并使用'}).click();
@@ -551,19 +625,22 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   expect(requests[0]).toMatchObject({action:'crop',asset_id:'asset-photo',width:.75,height:1});
   await page.getByRole('button',{name:'保存修改',exact:true}).click();
   await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-new-1');
-  await card.getByRole('button',{name:'AI 配图'}).click();
+  await openPicture(page,'AI 生成 / 调整');
   await expect(page.getByLabel('图片模型',{exact:true})).toHaveValue('image-model');
   await page.getByLabel('基于当前图片调整',{exact:false}).check();
   await page.getByLabel('图片修改要求').fill('保留建筑，调整为温暖的日落光线');
   await page.getByRole('button',{name:'按要求调整图片'}).click();
   await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/asset-new-2/file');
   expect(requests[1]).toMatchObject({action:'edit',asset_id:'asset-new-1',model_id:'image-model',prompt:'保留建筑，调整为温暖的日落光线'});
-  await expect(card.getByLabel('图片说明与署名')).toHaveValue('AI 生成示意图');
   await card.screenshot({path:testInfo.outputPath('picture-card.png')});
+  await openPicture(page);
+  await expect(drawer.getByLabel('图片说明与署名')).toHaveValue('AI 生成示意图');
+  await drawer.screenshot({path:testInfo.outputPath('picture-settings-desktop.png')});
+  await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'保存修改',exact:true}).click();
   await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-new-2');
   expect(state.article!.document!.sections).toEqual(original.sections);
-  await page.setViewportSize({width:390,height:844});await card.getByRole('button',{name:'联网找图'}).click();
+  await page.setViewportSize({width:390,height:844});await openPicture(page,'联网找图');
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await expect(page.getByRole('dialog')).toHaveCSS('position','fixed');
   await expect(page.getByRole('dialog').getByRole('button',{name:'搜索图片'})).toHaveCSS('display','inline-flex');

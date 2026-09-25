@@ -4,6 +4,7 @@ import {ArrowRight,Bird,Clapperboard,FileText,Image,LoaderCircle,Plus,X} from 'l
 import {api,dateText,send} from './api';
 import type {CreationKind,CreationTask,Settings,Topic} from './types';
 import ModelsPage from './ModelsPage';
+import WeChatAccountsPage from './WeChatAccountsPage';
 import TaskDelete from './TaskDelete';
 import TaskWorkbench from './TaskWorkbench';
 import MaterialsPage from './MaterialsPage';
@@ -16,7 +17,7 @@ export const statuses={queued:'等待制作',running:'制作中',needs_review:'�
 export const kindNames={video:'视频',article:'公众号文章',image:'图片'};
 export const kindIcons={video:Clapperboard,article:FileText,image:Image};
 export const runLabels:Record<string,string>={...statuses,publishing:'微信发布中',published:'已发布',wechat_draft:'微信草稿',awaiting_publish:'待你发布',ready:'已完成',needs_revision:'待修订',needs_angle:'待选角度',needs_outline:'待确认大纲',draft:'可编辑'};
-const pages=[{id:'home',name:'首页'},{id:'tasks',name:'任务列表'},{id:'materials',name:'素材库'},{id:'models',name:'我的模型'}];
+const pages=[{id:'home',name:'首页'},{id:'tasks',name:'任务列表'},{id:'materials',name:'素材库'},{id:'models',name:'我的模型'},{id:'accounts',name:'发布账号'}];
 const route=()=>{const value=location.hash.slice(1);return pages.some(p=>p.id===value)||value==='records'||value.startsWith('tasks?')||value.startsWith('task/')?value:'home';};
 export default function App(){return <NotificationProvider><ConfirmationProvider><StudioApp/></ConfirmationProvider></NotificationProvider>;}
 function StudioApp(){
@@ -47,6 +48,7 @@ function StudioApp(){
       {page==='records'&&<CreationRecords onOpen={openTask}/>}
       {page==='materials'&&<MaterialsPage settings={settings} topics={topics} onSaved={setSettings} onRefresh={refresh} onError={setError} onNotice={setNotice}/>}
       {page==='models'&&<ModelsPage onError={setError} onNotice={setNotice}/>}
+      {page==='accounts'&&<WeChatAccountsPage onError={setError} onNotice={setNotice}/>}
       {page.startsWith('task/')&&<TaskWorkbench onDeleted={removed} key={page} id={page.slice(5).split('?')[0]} initialRun={new URLSearchParams(page.split('?')[1]||'').get('run')||undefined} topics={topics} onRefresh={refresh} onDirty={mark} onError={setError} onNotice={setNotice}/>}
     </>}</main><footer className="ss-footer"><span>知序 · 自媒体创作平台</span><span>本地保存 · 北京时间 · 定时执行需保持服务运行</span></footer>
     {creating&&<NewTask onClose={()=>setCreating(false)} onCreated={async task=>{setCreating(false);await refresh();navigate('task/'+task.id);setNotice('任务已创建，可以开始配置。');}}/>}

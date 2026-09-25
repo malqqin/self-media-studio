@@ -5,6 +5,9 @@
 #science-fieldnotes .workspace-drawer-heading h2{font-family:var(--fn-serif);font-size:26px;font-weight:500;margin:8px 0}
 #science-fieldnotes .workspace-drawer-heading p{font-size:12px;line-height:1.7;color:var(--ss-muted);margin:0}
 #science-fieldnotes .workspace-drawer-body{padding:24px 26px;overflow:auto;min-height:0;overscroll-behavior:contain;scrollbar-width:thin}
+#science-fieldnotes .workspace-drawer.workspace-dialog-centered{inset:0;margin:auto;width:min(820px,calc(100vw - 40px));height:auto;max-height:min(860px,calc(100dvh - 64px));box-shadow:0 24px 80px #15261d33}
+#science-fieldnotes .workspace-dialog-footer{flex:none;padding:16px 26px;border-top:1px solid var(--ss-line);background:var(--ss-paper)}
+@media(max-width:760px){#science-fieldnotes .workspace-drawer.workspace-dialog-centered{width:calc(100vw - 24px);max-height:calc(100dvh - 32px);border-radius:14px}#science-fieldnotes .workspace-dialog-footer{padding:14px 20px}}
 #science-fieldnotes .workspace-icon-button{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:none;border:0;background:transparent;color:var(--ss-muted);border-radius:50%;cursor:pointer}
 #science-fieldnotes .workspace-icon-button:hover{background:var(--ss-soft);color:var(--ss-ink)}
 #science-fieldnotes .workspace-icon-button svg{width:18px;height:18px}
@@ -65,11 +68,14 @@
 #science-fieldnotes .article-flow>.fn-label{font-size:10px;letter-spacing:1px;padding-left:5px;color:var(--ss-muted)}
 #science-fieldnotes .article-flow .article-steps{display:flex;flex-direction:column;gap:0;margin:18px 0 0;padding:0}
 #science-fieldnotes .article-flow .article-steps li{position:relative;margin:0;padding:0 0 14px;border:0}
-#science-fieldnotes .article-flow .article-steps li:not(:last-child):after{content:'';position:absolute;left:16px;top:32px;bottom:0;width:1px;background:var(--ss-line)}
+#science-fieldnotes .article-flow .article-steps li:not(:last-child):after{content:'';position:absolute;left:16px;top:39px;bottom:-3px;width:1px;background:var(--ss-line);pointer-events:none}
 #science-fieldnotes .article-flow .article-steps button{display:flex;align-items:center;gap:7px;width:100%;padding:7px 2px;border:0;border-radius:6px;font-size:11px;line-height:1.4;background:transparent;text-align:left;color:var(--ss-muted)}
-#science-fieldnotes .article-flow .article-steps button span{display:grid;place-items:center;width:28px;height:28px;flex:none;margin:0;border:1px solid var(--ss-line);border-radius:50%;font-size:10px;opacity:1;background:var(--ss-paper)}
+#science-fieldnotes .article-flow .article-steps button span{position:relative;z-index:1;display:grid;place-items:center;box-sizing:border-box;width:28px;height:28px;flex:none;margin:0;border:1px solid var(--ss-line);border-radius:50%;font-size:10px;opacity:1;background:var(--ss-paper)}
 #science-fieldnotes .article-flow .article-steps li.current button{color:var(--ss-accent);font-weight:600;background:transparent}
 #science-fieldnotes .article-flow .article-steps li.current button span{color:white;background:var(--ss-accent);border-color:var(--ss-accent);box-shadow:0 0 0 4px var(--ss-soft)}
+#science-fieldnotes .article-flow .article-steps li.current button span:before{content:'';position:absolute;inset:-5px;border:1px solid var(--ss-accent);border-radius:50%;pointer-events:none;animation:article-step-breathe 2.8s ease-in-out infinite}
+@keyframes article-step-breathe{0%,100%{transform:scale(.94);opacity:.2}50%{transform:scale(1.12);opacity:.5}}
+@media(prefers-reduced-motion:reduce){#science-fieldnotes .article-flow .article-steps li.current button span:before{animation:none;opacity:.25}}
 #science-fieldnotes .article-flow .article-steps li.reached button span{color:var(--ss-accent);border-color:var(--ss-accent)}
 #science-fieldnotes .article-flow .article-steps button:disabled{opacity:.65}
 #science-fieldnotes .article-workspace-content>.article-step-tools{margin-top:0}

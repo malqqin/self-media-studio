@@ -1,21 +1,31 @@
 """Bounded image search, immutable derivatives and persisted image requests."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 import io
 import json
 import re
 import uuid
+import threading
 from urllib.parse import urlencode,urlsplit
 import httpx
 from bs4 import BeautifulSoup
 from PIL import Image
 from fastapi import HTTPException
-from . import db,media,model_library
+from . import db,media,model_library,unsplash
 from .network import fetch_public, public_url
 from .picture_models import PictureRequest
 
 executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='studio-pictures')
 search_executor=ThreadPoolExecutor(max_workers=4,thread_name_prefix='studio-picture-search')
+preview_slots=threading.BoundedSemaphore(4)
+
+
+class SearchResults(list):
+    """A provider page before cross-provider filtering; empty matches can have a next page."""
+    def __init__(self,items,has_more):
+        super().__init__(items)
+        self.has_more=bool(has_more)
 
 
 def init(c=None):
@@ -52,9 +62,32 @@ def clean(value):
     return BeautifulSoup(str(value or ''),'html.parser').get_text(' ',strip=True)
 
 
-def search_commons(query):
+@lru_cache(maxsize=96)
+def preview(ident):
+    """Fallback for saved search candidates only, never an arbitrary URL proxy."""
+    with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=?',(ident,)).fetchone()
+    if not row:raise HTTPException(404,'搜索结果已不存在，请重新搜索。')
+    item=json.loads(row['data'])
+    if item.get('provider')=='Unsplash':raise HTTPException(400,'Unsplash 预览请使用官方图片地址。')
+    if not preview_slots.acquire(timeout=1):raise HTTPException(503,'预览请求较多，请稍后重试。')
+    try:
+        for url in dict.fromkeys(filter(None,[item.get('url'),item.get('preview_url')])):
+            try:
+                public_url(url)
+                content,_=fetch_public(url,8_000_000,timeout=6)
+                with Image.open(io.BytesIO(content)) as original:
+                    if original.format not in ('JPEG','PNG','WEBP','GIF') or original.width*original.height>24_000_000:continue
+                    original.thumbnail((640,480))
+                    output=io.BytesIO();original.convert('RGB').save(output,format='JPEG',quality=80)
+                    return output.getvalue()
+            except Exception:continue
+        raise HTTPException(502,'缩略图和原图均无法加载，可能链接失效或来源网站限制访问。')
+    finally:preview_slots.release()
+
+
+def search_commons(query,page=1):
     params={'action':'query','format':'json','generator':'search','gsrsearch':query,'gsrnamespace':6,'gsrlimit':12,
-            'prop':'imageinfo','iiprop':'url|size|extmetadata|mime','iiurlwidth':900}
+            'gsroffset':(page-1)*12,'prop':'imageinfo','iiprop':'url|size|extmetadata|mime','iiurlwidth':900}
     data=json.loads(fetch_public('https://commons.wikimedia.org/w/api.php?'+urlencode(params),timeout=6)[0])
     if 'error' in data:raise ValueError('图库查询失败。')
     results=[]
@@ -72,11 +105,11 @@ def search_commons(query):
                'width':info.get('width'),'height':info.get('height'),'provider':'Wikimedia Commons'}
         value['license_verified']=True
         results.append(value)
-    return results
+    return SearchResults(results,'gsroffset' in data.get('continue',{}))
 
 
-def search_openverse(query):
-    params={'q':query,'page_size':12,'license':'by,by-sa,cc0,pdm','filter_dead':True}
+def search_openverse(query,page=1):
+    params={'q':query,'page':page,'page_size':12,'license':'by,by-sa,cc0,pdm','filter_dead':True}
     data=json.loads(fetch_public('https://api.openverse.org/v1/images/?'+urlencode(params),timeout=6)[0])
     if not isinstance(data.get('results'),list):raise ValueError('图库返回内容异常。')
     results=[]
@@ -91,11 +124,11 @@ def search_openverse(query):
             'credit':clean(item.get('creator'))[:300],'license':(labels[license]+' '+(item.get('license_version') or '')).strip(),
             'license_url':item.get('license_url',''),'description':clean(item.get('title')),
             'width':width,'height':height,'provider':'Openverse','license_verified':True})
-    return results
+    return SearchResults(results,page<data['page_count'] if isinstance(data.get('page_count'),int) else bool(data.get('next')))
 
 
-def search_bing(query):
-    params={'q':query,'count':24,'first':1,'adlt':'strict'}
+def search_bing(query,page=1):
+    params={'q':query,'count':24,'first':(page-1)*24+1,'adlt':'strict'}
     content,_=fetch_public('https://www.bing.com/images/search?'+urlencode(params),timeout=6)
     soup=BeautifulSoup(content,'html.parser');results=[]
     for node in soup.select('a.iusc[m]'):
@@ -108,18 +141,58 @@ def search_bing(query):
             'description':clean(item.get('desc'))[:1000],'provider':'必应图片','license_verified':False})
     if not results and not (soup.select_one('#b_results') or soup.select_one('.dgControl')):
         raise ValueError('图片搜索未返回可解析的结果，可能需要验证或搜索页面已变化。')
-    return results
+    # The HTML source has no reliable total. Allow one more request until it
+    # returns no images; do not invent a total number of pages.
+    return SearchResults(results,bool(results))
 
 
-def search_report(query,source='web'):
+def search_360(query,page=1):
+    data=json.loads(fetch_public('https://image.so.com/j?'+urlencode({'q':query,'sn':(page-1)*24,'pn':24}),timeout=6)[0])
+    if not isinstance(data.get('list'),list):raise ValueError('360 图片未返回搜索结果，可能需要验证。')
+    results=[{'title':clean(i.get('title')),'url':i.get('img') or i.get('imgurl',''),
+             'preview_url':i.get('thumb',''),'page_url':i.get('link') or i.get('purl',''),
+             'description':clean(i.get('title')),'provider':'360 图片','credit':'','license':'授权待核对',
+             'license_url':'','license_verified':False} for i in data['list']]
+    return SearchResults(results,not data['end'] if 'end' in data else len(data['list'])>=24)
+
+
+def search_baidu(query,page=1):
+    data=json.loads(fetch_public('https://image.baidu.com/search/acjson?'+urlencode({'tn':'resultjson_com','ipn':'rj','word':query,'pn':(page-1)*24,'rn':24}),timeout=6)[0])
+    if not isinstance(data.get('data'),list):raise ValueError('百度图片限制了自动访问，请换一个来源。')
+    results=[]
+    for i in data['data']:
+        if not i:continue
+        urls=i.get('replaceUrl') or [{}];original=urls[0]
+        results.append({'title':clean(i.get('fromPageTitleEnc') or i.get('fromPageTitle')),
+            'url':original.get('ObjURL') or i.get('middleURL',''),'preview_url':i.get('thumbURL',''),
+            'page_url':original.get('FromURL') or i.get('fromURLHost',''),
+            'description':clean(i.get('fromPageTitle')),'provider':'百度图片','credit':'',
+            'license':'授权待核对','license_url':'','license_verified':False})
+    return SearchResults(results,page*24<data['displayNum'] if isinstance(data.get('displayNum'),int) else len(results)>=24)
+
+
+def relevant(query,item):
+    """Reject unrelated fallback/trending results using available title and description."""
+    text=(item.get('title','')+' '+item.get('description','')).casefold()
+    subject=re.sub(r'图片|配图|照片|高清|壁纸','',query.casefold()).strip()
+    if not subject:return False
+    if any(term in subject for term in ('大模型','人工智能','llm')) or re.search(r'\bai\b',subject):
+        return bool(re.search(r'\b(?:ai|llm|gpt|chatgpt|deepseek)\b|人工智能|大模型|神经网络|机器学习|语言模型|artificial intelligence|language model',text))
+    tokens=re.findall(r'[a-z0-9]+|[\u4e00-\u9fff]+',subject)
+    return any((token in text if token.isascii() else any(token[i:i+2] in text for i in range(max(1,len(token)-1)))) for token in tokens)
+
+
+def search_report(query,source='web',sources=None,page=1):
     """Keep provider failures distinct from zero matches; never relabel web results as licensed."""
     if source not in ('web','licensed'):raise ValueError('不支持的图片来源。')
+    if not 1<=page<=50:raise ValueError('图片搜索页码应在 1 到 50 之间。')
     providers=[];results=[];seen=set()
 
     def collect(name,fetch):
         try:
-            candidates=fetch.result();accepted=[]
+            candidates=fetch.result();accepted=[];excluded=0
             for item in candidates:
+                if not relevant(query,item):excluded+=1;continue
                 try:
                     public_url(item.get('url',''));public_url(item.get('page_url',''))
                     if item.get('preview_url'):public_url(item['preview_url'])
@@ -127,26 +200,37 @@ def search_report(query,source='web'):
                 except (ValueError,TypeError):continue
                 if item['url'] in seen:continue
                 seen.add(item['url']);accepted.append(item)
-                if len(results)+len(accepted)>=24:break
             results.extend(accepted)
-            providers.append({'name':name,'status':'success' if accepted else 'empty','count':len(accepted)})
+            note=f'已排除 {excluded} 张标题或描述与搜索主题不匹配的图片' if excluded else ''
+            if name=='Unsplash' and not accepted:note+='；推荐使用准确的英文主体名称搜索，例如 mountain、city。'
+            providers.append({'name':name,'status':'success' if accepted else 'empty','count':len(accepted),'excluded':excluded,
+                              'message':note.lstrip('；'),'has_more':page<50 and getattr(candidates,'has_more',bool(candidates))})
+        except ValueError as error:
+            providers.append({'name':name,'status':'error','count':0,'message':str(error)[:180]})
         except Exception:
             providers.append({'name':name,'status':'error','count':0,'message':'连接超时、服务限制或暂不可用'})
 
-    if source=='web':collect('必应图片',search_executor.submit(search_bing,query))
-    if source=='licensed' or not results:
-        requests=[(name,search_executor.submit(fetch,query)) for name,fetch in [('Wikimedia Commons',search_commons),('Openverse',search_openverse)]]
+    registry={'bing':('必应图片',search_bing),'360':('360 图片',search_360),'baidu':('百度图片',search_baidu),
+              'unsplash':('Unsplash',unsplash.search),'commons':('Wikimedia Commons',search_commons),'openverse':('Openverse',search_openverse)}
+    def submit(fetch):return search_executor.submit(fetch,query) if page==1 else search_executor.submit(fetch,query,page=page)
+    if sources:
+        if any(s not in registry for s in sources):raise ValueError('不支持的图片来源。')
+        requests=[(registry[s][0],submit(registry[s][1])) for s in dict.fromkeys(sources)]
         for name,request in requests:collect(name,request)
-    results=results[:24]
+    elif source=='web':collect('必应图片',submit(search_bing))
+    if not sources and (source=='licensed' or not results):
+        requests=[(name,submit(fetch)) for name,fetch in [('Wikimedia Commons',search_commons),('Openverse',search_openverse)]]
+        for name,request in requests:collect(name,request)
     with db.connect() as c:
         for item in results:
             item['id']='pic-'+uuid.uuid4().hex
             c.execute('INSERT INTO picture_candidates VALUES (?,?,?)',(item['id'],db.dump(item),db.now()))
-    return {'items':results,'providers':providers,'query':query,'source':source}
+    return {'items':results,'providers':providers,'query':query,'source':source,'sources':sources or [],
+            'page':page,'has_more':any(p.get('has_more',False) for p in providers)}
 
 
-def search(query,source='licensed'):
-    report=search_report(query,source)
+def search(query,source='licensed',sources=None,page=1):
+    report=search_report(query,source,sources,page)
     if report['providers'] and all(p['status']=='error' for p in report['providers']):
         raise ValueError('当前图片来源均无法连接。'+('可在配图配置中改用“必应图片”，或选择 AI 生成。' if source=='licensed' else '请稍后重试，或上传图片、使用 AI 生成。'))
     return report['items']
@@ -204,6 +288,7 @@ def produce(body,job_id):
         with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=?',(body.candidate_id,)).fetchone()
         if not row:raise ValueError('搜索结果已不存在，请重新搜索。')
         source=json.loads(row['data'])
+        if source.get('provider')=='Unsplash':unsplash.track_download(source)
         try:content=media.fetch_image(source['url'])
         except Exception:raise ValueError('原图暂时无法下载，请换一张或稍后重试。') from None
         value=media.store_asset(content,source['title'],source['license']+'；'+source['license_url'],source['credit'],source['page_url'])

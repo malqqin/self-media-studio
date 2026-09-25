@@ -54,7 +54,7 @@ def test_native_paste_replaces_old_body_keeps_rich_style_and_all_paragraphs(edit
     assert 'color' in editor.locator(adapter.BODY+' h2').get_attribute('style')
 
 
-@pytest.mark.parametrize('template',['cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight','breeze','tide','orbit','firefly','rain','petal'])
+@pytest.mark.parametrize('template',['cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight'])
 def test_new_template_paste_verifies_decorations_and_text(editor,document,template):
     from backend.article_templates import decoration_id
     document['template_id']=template
@@ -64,25 +64,6 @@ def test_new_template_paste_verifies_decorations_and_text(editor,document,templa
     adapter.paste(editor,article_export.html_body(document,paths,wechat=True))
     adapter.verify_body(editor,document)
     expect(editor.locator(adapter.BODY+' h1')).to_have_text(document['title'])
-
-
-def test_browser_upload_keeps_gif_file_then_pastes_complete_body(editor,document):
-    from backend.article_templates import decoration_path
-    document['template_id']='tide'
-    content=decoration_path('template-decoration-tide').read_bytes()
-    editor.route('https://mmbiz.qpic.cn/template.gif',lambda route:route.fulfill(content_type='image/gif',body=content))
-    editor.evaluate('''()=>{
-        const input=document.createElement('input');input.type='file';input.accept='image/svg+xml,image/gif';
-        input.addEventListener('change',()=>{
-            window.uploaded={name:input.files[0].name,type:input.files[0].type,size:input.files[0].size};
-            const image=document.createElement('img');image.src='https://mmbiz.qpic.cn/template.gif';
-            document.querySelector('.view .ProseMirror').append(image);
-        });document.body.append(input);
-    }''')
-    paths=adapter.fill_body(editor,{'document':document})
-    assert paths=={'template-decoration-tide':'https://mmbiz.qpic.cn/template.gif'}
-    assert editor.evaluate('window.uploaded')=={'name':'template-decoration-tide.gif','type':'image/gif','size':len(content)}
-    expect(editor.locator(adapter.BODY+' img')).to_have_attribute('src','https://mmbiz.qpic.cn/template.gif')
 
 
 def test_structural_dialog_is_explained_and_save_is_never_clicked(editor,document):

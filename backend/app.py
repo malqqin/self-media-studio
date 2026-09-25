@@ -84,7 +84,7 @@ def require_job(job_id):
 @app.get('/api/health')
 def health():
     connection=model_config.public()
-    return {'ok':True,'name':'知序','version':'0.1.0','ai_ready':connection['ready'],
+    return {'ok':True,'name':'知序','version':'0.1.0','ai_ready':connection['ready'] and connection.get('protocol') in ('responses','chat_completions'),
             'model':connection['model'] or None,'audio_mode':'silent','duration_seconds':10,'local_only':True}
 
 

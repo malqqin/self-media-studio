@@ -36,7 +36,7 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
     connection=connection or selected_connection()
     if not connection['model'] or not connection['api_key']:
         raise ModelRequestError('请到“我的模型”配置模型，并在任务中选择。')
-    if connection.get('protocol')=='images':raise ModelRequestError('当前选择的是图片模型，请为文字创作选择文字模型。')
+    if connection.get('protocol') not in ('chat_completions','responses'):raise ModelRequestError('当前模型不支持文字创作，请选择可调用的文本模型。')
     schema=strict_schema(model_class.model_json_schema())
     # Compatibility mode still validates the returned JSON against the same local schema.
     instructions+='\n只返回 JSON 对象，不要 Markdown。必须符合此 JSON Schema：'+json.dumps(schema,ensure_ascii=False)

@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator, field_valida
 from .network import public_url
 from .article_formats import ARTICLE_FORMATS
 
-ArticleTemplate = Literal['classic','tech','travel','guide','opinion','minimal','cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight','breeze','tide','orbit','firefly','rain','petal']
+ArticleTemplate = Literal['classic','tech','travel','guide','opinion','minimal','cream','sage','journal','editorial','newspaper','ink','rose','ocean','coffee','butter','postcard','midnight']
 
 
 class TextModel(BaseModel):

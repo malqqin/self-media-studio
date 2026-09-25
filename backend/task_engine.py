@@ -17,7 +17,7 @@ executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='studio-tasks')
 def validated(settings, kind, action='automatic'):
     if action=='blank':return
     if action!='blank' and not model_library.ready(settings.model_id):raise ValueError('请选择一个已配置的模型，或先到“我的模型”添加。')
-    if model_library.current(settings.model_id).get('protocol')=='images':raise ValueError('请为文字创作选择文字模型，图片模型在配图配置中单独选择。')
+    if model_library.current(settings.model_id).get('protocol') not in ('chat_completions','responses'):raise ValueError('请为文字创作选择文字模型，图片模型在配图配置中单独选择。')
     if kind=='article':
         from .article_pictures import validate
         validate(settings.illustration)

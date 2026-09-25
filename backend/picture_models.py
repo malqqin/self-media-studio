@@ -2,11 +2,14 @@ from typing import Literal, Annotated
 from pydantic import Field, model_validator
 from .article_models import TextModel
 
+PictureSource = Literal['bing','360','baidu','unsplash','commons','openverse']
+
 
 class IllustrationSettings(TextModel):
     enabled: bool = False
     mode: Literal['manual','web','ai','smart'] = 'smart'
     web_source: Literal['web','licensed'] = 'licensed'
+    web_sources: list[PictureSource] = Field(default_factory=list,max_length=6)
     cover: bool = True
     count: int = Field(default=3,ge=0,le=6)
     style: str = Field(default='自然、简洁，与文章内容一致，不添加文字或水印',max_length=600)

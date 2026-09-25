@@ -54,11 +54,24 @@ class ModelConnection(BaseModel):
     name: str = Field(default='自定义模型', min_length=1, max_length=60)
     base_url: str = Field(default='https://api.openai.com/v1', max_length=2000)
     model: str = Field(default='', max_length=150)
-    protocol: Literal['responses', 'chat_completions', 'images'] = 'responses'
+    protocol: Literal['responses', 'chat_completions', 'images', 'catalog'] = 'responses'
+    provider: str = Field(default='', max_length=40, pattern=r'^[a-z0-9-]*$')
+    model_type: Literal['text','image','video','audio','embedding','unknown'] | None = None
+    description: str = Field(default='', max_length=500)
     image_edit: bool = False
     output_mode: Literal['json_schema', 'json_object', 'text'] = 'json_schema'
     api_key: str = Field(default='', max_length=4096, repr=False)
     clear_key: bool = False
+
+    @model_validator(mode='after')
+    def valid_model_kind(self):
+        if self.model_type in ('video','audio','embedding','unknown') and self.protocol != 'catalog':
+            raise ValueError('此模型类型暂不支持创作调用，请选择“仅保存目录”。')
+        if self.model_type == 'image' and self.protocol not in ('images','catalog'):
+            raise ValueError('生图模型请选择 Images 协议或仅保存目录。')
+        if self.model_type == 'text' and self.protocol == 'images':
+            raise ValueError('文本模型不能使用图片生成协议。')
+        return self
 
     @field_validator('base_url')
     @classmethod

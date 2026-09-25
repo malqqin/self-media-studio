@@ -50,13 +50,15 @@ def current(model_id='default'):
 
 
 def catalog():
+    from .model_directory import metadata
     # Listing names does not decrypt each key and never returns ciphertext.
     with model_config.lock:
         result = [{'id':'default', **model_config.public()}]
         for ident, value in read().items():
             configured = bool(value.get('protected_key'))
             result.append({'id':ident, **{k:value[k] for k in ('name','base_url','model','protocol','output_mode')},
-                           'image_edit':value.get('image_edit',False),'key_configured':configured,'ready':configured and bool(value.get('model')),'origin':'library'})
+                           **metadata(value), 'image_edit':value.get('image_edit',False),'key_configured':configured,
+                           'ready':configured and bool(value.get('model')) and value.get('protocol')!='catalog','origin':'library'})
     return result
 
 
@@ -85,7 +87,7 @@ def save(body, model_id=None):
 
 def ready(model_id):
     value = current(model_id)
-    return bool(value.get('model') and value.get('api_key'))
+    return bool(value.get('model') and value.get('api_key') and value.get('protocol')!='catalog')
 
 
 @contextmanager

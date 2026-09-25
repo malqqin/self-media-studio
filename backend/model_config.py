@@ -44,10 +44,12 @@ def current():
 
 
 def public(data=None):
+    from .model_directory import metadata
     data=data if data is not None else current()
     return {**{k:v for k,v in data.items() if k in ('name','base_url','model','protocol','output_mode','origin','image_edit')},
+            **metadata(data),
             'key_configured':bool(data.get('api_key')),
-            'ready':bool(data.get('api_key') and data.get('model'))}
+            'ready':bool(data.get('api_key') and data.get('model') and data.get('protocol') != 'catalog')}
 
 
 def resolve(body: ModelConnection):

@@ -2,6 +2,9 @@ import {test,expect,type Page} from '@playwright/test';
 import {settings,taskSettings,models,task as makeTask} from './fixtures';
 import type {CreationTask,ImageJob,TaskRun} from '../../src/types';
 
+async function openConfig(page:Page,title:string){await page.getByRole('button',{name:'配置'+title,exact:true}).click();}
+async function finishConfig(page:Page){await page.getByRole('button',{name:'完成设置',exact:true}).click();}
+
 export async function mockPlatform(page:Page){
   const state={tasks:[] as CreationTask[],writes:[] as {path:string;body:any}[],image:null as ImageJob|null};
   await page.route('**/api/**',async route=>{
@@ -41,7 +44,7 @@ export async function mockPlatform(page:Page){
 test('home creates named tasks of each type and filters task list',async({page},testInfo)=>{
   const state=await mockPlatform(page),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await expect(page.getByRole('heading',{name:'给第一个想法起个名字。'})).toBeVisible();
-  await expect(page.getByRole('navigation')).toHaveText('首页任务列表素材库我的模型');
+  await expect(page.getByRole('navigation')).toHaveText('首页任务列表素材库我的模型发布账号');
   for(const [kind,name] of [['公众号文章','每周工具观察'],['视频','城市生活短片'],['图片','周末生活卡片']]){
     await page.getByRole('button',{name:'新建任务',exact:true}).click();const dialog=page.getByRole('dialog');
     await dialog.getByLabel('任务名称').fill(name);await dialog.getByRole('button',{name:new RegExp(kind)}).click();await dialog.getByRole('button',{name:'创建并进入工作台'}).click();
@@ -55,13 +58,44 @@ test('home creates named tasks of each type and filters task list',async({page},
   expect(state.tasks).toHaveLength(3);expect(errors).toEqual([]);
 });
 
+test('configuration summaries open focused dialogs and preserve choices until saved',async({page},testInfo)=>{
+  const state=await mockPlatform(page),task=makeTask('article','summary-task');state.tasks.push(task);
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('/#task/summary-task');
+  await expect(page.locator('.configuration-entry')).toHaveCount(6);
+  await expect(page.getByLabel('AppSecret',{exact:true})).toHaveCount(0);
+  await expect(page.getByLabel('文章交付方式')).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'配置作品交付',exact:true})).toContainText('留在工作台');
+  await page.getByLabel('这篇想写的话题').fill('周末去平遥，看看古建筑');
+  await openConfig(page,'写作偏好');await page.getByLabel('目标字数').fill('1800');await page.getByLabel('文章形式',{exact:true}).selectOption('旅行攻略');await page.keyboard.press('Escape');
+  await expect(page.getByRole('button',{name:'配置写作偏好',exact:true})).toContainText('旅行攻略 · 约 1800 字');
+  await expect(page.getByRole('button',{name:'配置写作偏好',exact:true})).toBeFocused();
+  await openConfig(page,'文章排版');await expect(page.getByRole('dialog').getByRole('radio')).toHaveCount(18);
+  await page.getByLabel('搜索排版模板').fill('鼠尾草');await page.getByRole('radio',{name:'鼠尾草花园',exact:true}).check();
+  await page.getByRole('dialog').screenshot({path:testInfo.outputPath('configuration-template-desktop.png')});await finishConfig(page);
+  await expect(page.getByRole('button',{name:'配置文章排版',exact:true})).toContainText('鼠尾草花园');
+  await openConfig(page,'参考资料');await page.getByLabel('平台自动联网查找资料').check();await page.getByLabel('搜索范围').selectOption('wechat');await page.getByLabel('发布时间',{exact:true}).selectOption('7');await finishConfig(page);
+  await expect(page.getByRole('button',{name:'配置参考资料',exact:true})).toContainText('近 7 天');
+  expect(state.writes).toHaveLength(0);
+  await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect.poll(()=>task.settings.article.template_id).toBe('sage');
+  expect(task.settings.article.length).toBe(1800);expect(task.settings.materials.max_age_days).toBe(7);
+  await page.getByRole('button',{name:'关闭成功提示'}).click();await expect(page.locator('.notification-success')).toHaveCount(0);await page.evaluate(()=>window.scrollTo(0,0));
+  await page.screenshot({path:testInfo.outputPath('configuration-summary-desktop.png'),fullPage:true});
+  await page.reload();await expect(page.getByRole('button',{name:'配置文章排版',exact:true})).toContainText('鼠尾草花园');
+  await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('configuration-summary-mobile.png'),fullPage:true});
+  await openConfig(page,'文章排版');await page.getByLabel('搜索排版模板').fill('奶油');await expect(page.getByRole('dialog').getByRole('radio')).toHaveCount(1);
+  await page.getByRole('dialog').screenshot({path:testInfo.outputPath('configuration-template-mobile.png')});await finishConfig(page);
+  expect(errors).toEqual([]);
+});
+
 test('per-task model, collection and schedule persist; manual image remains editable',async({page},testInfo)=>{
   const state=await mockPlatform(page);state.tasks.push(makeTask('image','task-1'));
   await page.goto('/#task/task-1');await page.getByLabel('创作主题与受众').fill('周末城市生活，写给喜欢散步和记录的年轻人');
   await page.getByLabel('自动执行',{exact:false}).check();await page.getByLabel('执行时间（北京时间）').fill('18:45');
-  await page.getByLabel('周日',{exact:true}).click();await page.getByLabel('平台自动联网查找资料').check();await page.getByLabel('查找关键词').fill('城市生活');
-  await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect(page.getByRole('status')).toContainText('设定时间自动执行');
-  await page.reload();await expect(page.getByLabel('执行时间（北京时间）')).toHaveValue('18:45');await expect(page.getByLabel('查找关键词')).toHaveValue('城市生活');
+  await page.getByLabel('周日',{exact:true}).click();await openConfig(page,'参考资料');await page.getByLabel('平台自动联网查找资料').check();await page.getByLabel('查找关键词').fill('城市生活');
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect(page.getByRole('status')).toContainText('设定时间自动执行');
+  await page.reload();await expect(page.getByLabel('执行时间（北京时间）')).toHaveValue('18:45');await openConfig(page,'参考资料');await expect(page.getByLabel('查找关键词')).toHaveValue('城市生活');await finishConfig(page);
   expect(state.tasks[0].settings.schedule.weekdays).not.toContain(7);
   await page.getByRole('button',{name:'创建手动草稿',exact:true}).click();await expect(page.getByLabel('第 1 页标题')).toHaveValue('开始自己的创作');
   await page.getByLabel('第 1 页标题').fill('周末走出家门');await page.waitForResponse(r=>r.url().includes('/api/image-jobs/'));
@@ -73,39 +107,39 @@ test('per-task model, collection and schedule persist; manual image remains edit
 
 test('article forms are grouped, explained and persist independently of templates',async({page},testInfo)=>{
   const state=await mockPlatform(page),task=makeTask('article','task-forms');state.tasks.push(task);
-  await page.goto('/#task/task-forms');await page.locator('.account-preferences>summary').click();
+  await page.goto('/#task/task-forms');await openConfig(page,'写作偏好');
   const field=page.getByLabel('文章形式',{exact:true});
   await expect(field).toHaveValue('教程');await expect(field.locator('option')).toHaveCount(48);await expect(field.locator('optgroup')).toHaveCount(8);
   const oldTemplate=task.settings.article.template_id;
   await field.selectOption('访谈');await expect(page.locator('.article-format-hint')).toContainText('真实对话');
   await field.selectOption('旅行攻略');await expect(page.locator('.article-format-hint')).toContainText('路线');
-  await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
   await expect.poll(()=>task.settings.article.format).toBe('旅行攻略');expect(task.settings.article.template_id).toBe(oldTemplate);
-  await page.reload();await page.locator('.account-preferences>summary').click();await expect(field).toHaveValue('旅行攻略');
-  await page.locator('.account-preferences').screenshot({path:testInfo.outputPath('article-forms-desktop.png'),animations:'disabled'});
+  await page.reload();await openConfig(page,'写作偏好');await expect(field).toHaveValue('旅行攻略');
+  await page.getByRole('dialog').screenshot({path:testInfo.outputPath('article-forms-desktop.png'),animations:'disabled'});
   await page.setViewportSize({width:390,height:844});await field.selectOption('项目复盘');
   await expect(page.locator('.article-format-hint')).toContainText('项目目标');
   await expect(page.locator('.article-format-hint')).toHaveCSS('display','block');
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  await page.locator('.account-preferences').screenshot({path:testInfo.outputPath('article-forms-mobile.png'),animations:'disabled'});
-  await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect.poll(()=>task.settings.article.format).toBe('项目复盘');
+  await page.getByRole('dialog').screenshot({path:testInfo.outputPath('article-forms-mobile.png'),animations:'disabled'});
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect.poll(()=>task.settings.article.format).toBe('项目复盘');
 });
 
 test('all navigation and task configuration fit narrow screens',async({page},testInfo)=>{
   const state=await mockPlatform(page);state.tasks.push(makeTask('article','task-1'));
   await page.setViewportSize({width:390,height:844});await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/');
-  for(const name of ['首页','任务列表','素材库','我的模型']){await page.getByRole('navigation').getByRole('button',{name,exact:true}).click();await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
-  await page.goto('/#task/task-1');await page.locator('.account-preferences>summary').click();await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue(taskSettings.article.direction);
+  for(const name of ['首页','任务列表','素材库','我的模型','发布账号']){await page.getByRole('navigation').getByRole('button',{name,exact:true}).click();await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+  await page.goto('/#task/task-1');await openConfig(page,'写作偏好');await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue(taskSettings.article.direction);
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('task-mobile.png'),fullPage:true});
 });
 
 test('configuration edits survive polling and cancelled navigation',async({page})=>{
   const state=await mockPlatform(page);state.tasks.push(makeTask('article','task-1'));await page.goto('/#task/task-1');
-  await page.locator('.account-preferences>summary').click();await page.getByRole('textbox',{name:'公众号定位',exact:true}).fill('新的定位尚未保存');
-  await page.getByRole('link',{name:'任务列表',exact:true}).click();await expect(page.getByRole('alertdialog')).toBeVisible();await page.getByRole('button',{name:'继续编辑',exact:true}).click();
+  await openConfig(page,'写作偏好');await page.getByRole('textbox',{name:'公众号定位',exact:true}).fill('新的定位尚未保存');
+  await finishConfig(page);await page.getByRole('link',{name:'任务列表',exact:true}).click();await expect(page.getByRole('alertdialog')).toBeVisible();await page.getByRole('button',{name:'继续编辑',exact:true}).click();
   await expect(page).toHaveURL(/#task\/task-1$/);await page.waitForResponse(r=>r.url().endsWith('/api/tasks/task-1'));
-  await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue('新的定位尚未保存');
+  await openConfig(page,'写作偏好');await expect(page.getByRole('textbox',{name:'公众号定位',exact:true})).toHaveValue('新的定位尚未保存');
 });
 
 test('video task opens editable scenes and preserves the manual script',async({page})=>{
@@ -177,17 +211,16 @@ test('article direction, daily schedule and WeChat reference preferences persist
   const state=await mockPlatform(page),t=makeTask('article','task-daily');state.tasks.push(t);
   await page.goto('/#task/task-daily');await page.getByRole('button',{name:'围绕方向持续创作',exact:false}).click();
   await page.getByLabel('长期写作方向',{exact:true}).fill('山西值得去的旅游景点，每篇介绍一个地方，讲清文化特色与看点。');
-  await page.getByRole('button',{name:'参考文章创作',exact:true}).click();await page.getByLabel('希望参考什么').selectOption('structure');
+  await openConfig(page,'参考资料');await page.getByRole('button',{name:'参考文章创作',exact:true}).click();await page.getByLabel('希望参考什么').selectOption('structure');
   await page.getByLabel('平台自动联网查找资料').check();await page.getByLabel('搜索范围').selectOption('wechat');
   await page.getByLabel('发布时间',{exact:true}).selectOption('30');
-  await page.getByLabel('自动执行',{exact:false}).check();await page.getByLabel('执行时间（北京时间）').fill('08:30');
-  await expect(page.locator('.daily-writing-summary')).toContainText('每天围绕方向写一篇');
-  await expect(page.locator('.wechat-reference-note')).toContainText('不把搜索排名当作热度');
+  await expect(page.locator('.wechat-reference-note')).toContainText('不把搜索排名当作热度');await finishConfig(page);await page.getByLabel('自动执行',{exact:false}).check();await page.getByLabel('执行时间（北京时间）').fill('08:30');
+  await expect(page.locator('.configuration-overview')).toContainText('围绕方向选择新话题');
   await page.getByRole('button',{name:'保存配置',exact:true}).click();
   await expect(page.getByRole('status')).toContainText('设定时间自动执行');await page.getByRole('button',{name:'关闭成功提示'}).click();
   await page.reload();await expect(page.getByLabel('长期写作方向')).toHaveValue(t.settings.brief);
-  await expect(page.getByLabel('希望参考什么')).toHaveValue('structure');await expect(page.getByLabel('搜索范围')).toHaveValue('wechat');
-  expect(t.settings.article_plan?.mode).toBe('direction');expect(t.settings.materials.max_age_days).toBe(30);
+  await openConfig(page,'参考资料');await expect(page.getByLabel('希望参考什么')).toHaveValue('structure');await expect(page.getByLabel('搜索范围')).toHaveValue('wechat');
+  await finishConfig(page);expect(t.settings.article_plan?.mode).toBe('direction');expect(t.settings.materials.max_age_days).toBe(30);
   await page.screenshot({path:testInfo.outputPath('article-direction-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('article-direction-mobile.png'),fullPage:true});
@@ -311,11 +344,7 @@ test('WeChat connection, permissions and automatic delivery settings persist',as
     const account={id:'wechat-1',name:body.name,appid:body.appid,secret_configured:true,draft_ready:false,publish_ready:false,checked_at:null};accounts.push(account);return route.fulfill({json:account});
   });
   await page.route('**/api/assets',route=>route.fulfill({json:[{id:'cover-1',filename:'栏目封面.jpg',media_type:'image/jpeg',rights:'本人作品',credit:'',source_url:''}]}));
-  await page.goto('/#task/wechat-task');
-  await expect(page.getByLabel('文章交付方式')).toHaveValue('local');
-  await page.getByLabel('自动执行',{exact:false}).check();
-  await page.getByLabel('文章交付方式').selectOption('publish');
-  await page.getByText('连接 / 管理公众号',{exact:true}).click();
+  await page.goto('/#accounts');
   await page.getByLabel('连接名称',{exact:true}).fill('旅行公众号');
   await page.getByLabel('账号主体',{exact:true}).selectOption('organization');
   await page.getByLabel('AppID',{exact:true}).fill('wx1234567890abcdef');
@@ -323,14 +352,18 @@ test('WeChat connection, permissions and automatic delivery settings persist',as
   await page.getByRole('button',{name:'保存公众号连接',exact:true}).click();
   await expect(page.getByLabel('AppSecret',{exact:true})).toHaveValue('');
   await page.getByRole('button',{name:'检测已保存连接',exact:true}).click();
+  await expect(page.locator('.publishing-account-list')).toContainText('发布接口已就绪');
+  await page.goto('/#task/wechat-task');await page.getByLabel('自动执行',{exact:false}).check();await openConfig(page,'作品交付');
+  await expect(page.getByLabel('文章交付方式')).toHaveValue('local');await page.getByLabel('文章交付方式').selectOption('publish');
+  await page.getByLabel('发布公众号').selectOption('wechat-1');
   await expect(page.getByText('草稿已就绪 · 发布已就绪')).toBeVisible();
   await page.getByLabel('默认封面',{exact:true}).selectOption('cover-1');
   await page.getByLabel('文章署名（可选）').fill('旅行编辑');
-  await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
   expect(state.tasks[0].settings.wechat_delivery).toEqual({mode:'publish',account_id:'wechat-1',cover_asset_id:'cover-1',author:'旅行编辑'});
   expect(JSON.stringify(state.tasks)).not.toContain('not-a-real-secret');
   expect(requests[0].body.secret).toBe('not-a-real-secret');
-  await page.reload();await page.getByRole('button',{name:'任务配置',exact:true}).click();
+  await page.reload();await openConfig(page,'作品交付');
   await expect(page.getByLabel('文章交付方式')).toHaveValue('publish');
   await expect(page.getByLabel('发布公众号')).toHaveValue('wechat-1');
   await page.setViewportSize({width:390,height:844});
@@ -366,14 +399,14 @@ test('WeChat IP whitelist failure shows exact address and can retry',async({page
     account.draft_ready=true;account.publish_ready=true;
     return route.fulfill({json:{account,message:'连接成功，权限检测通过。'}});
   });
-  await page.goto('/#task/whitelist-task');
-  await page.getByRole('button',{name:'检测连接与权限',exact:true}).click();
+  await page.goto('/#accounts');await page.getByLabel('编辑连接').selectOption('wechat-1');
+  await page.getByRole('button',{name:'检测已保存连接',exact:true}).click();
   await expect(page.getByRole('alert')).toContainText('8.8.4.4');
-  await expect(page.locator('.wechat-publishing code')).toHaveText('8.8.4.4');
+  await expect(page.locator('.publishing-account-form code')).toHaveText('8.8.4.4');
   await expect(page.getByRole('button',{name:'复制出口 IP',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'关闭错误提示'}).click();
   await page.getByRole('button',{name:'已添加，重新检测',exact:true}).click();
-  await expect(page.locator('.wechat-publishing code')).toHaveCount(0);
+  await expect(page.locator('.publishing-account-form code')).toHaveCount(0);
   await expect(page.getByRole('status')).toContainText('连接成功');
   expect(checks).toBe(2);
 });
@@ -394,17 +427,11 @@ test('personal account needs no API credentials and QR login never implies publi
     const body=req.postDataJSON();expect(body.secret).toBe('');expect(body.appid).toBe('');
     const a={...body,id:'personal-1',secret_configured:false,draft_ready:false,publish_ready:false,checked_at:null};accounts.push(a);return route.fulfill({json:a});
   });
-  await page.goto('/#task/personal-task');
-  await page.getByText('连接 / 管理公众号',{exact:true}).click();
+  await page.goto('/#accounts');
   await expect(page.getByLabel('账号主体',{exact:true})).toHaveValue('personal');
   await expect(page.getByLabel('AppSecret',{exact:true})).toHaveCount(0);
   await page.getByLabel('连接名称',{exact:true}).fill('我的个人公众号');
   await page.getByRole('button',{name:'保存公众号连接',exact:true}).click();
-  await page.getByLabel('文章交付方式').selectOption('handoff');
-  await expect(page.getByLabel('文章交付方式').locator('option[value=publish]')).toHaveAttribute('disabled','');
-  await page.getByLabel('自动执行',{exact:false}).check();
-  await page.getByRole('button',{name:'保存配置',exact:true}).click();
-  expect(state.tasks[0].settings.wechat_delivery?.mode).toBe('handoff');
   await page.getByRole('button',{name:'扫码登录 / 检查登录',exact:true}).first().click();
   const dialog=page.getByRole('dialog',{name:'连接 我的个人公众号'});
   await dialog.getByRole('button',{name:'开始扫码登录'}).click();
@@ -413,7 +440,11 @@ test('personal account needs no API credentials and QR login never implies publi
   await page.screenshot({path:testInfo.outputPath('personal-login-mobile.png'),fullPage:true});
   await expect(dialog.locator('p[role=status]')).toContainText('扫码登录成功',{timeout:10000});
   await dialog.getByRole('button',{name:'关闭扫码窗口'}).click();
+  await page.goto('/#task/personal-task');await page.getByLabel('自动执行',{exact:false}).check();await openConfig(page,'作品交付');
+  await page.getByLabel('文章交付方式').selectOption('handoff');await page.getByLabel('发布公众号').selectOption('personal-1');
   await expect(page.getByLabel('文章交付方式').locator('option[value=publish]')).toHaveAttribute('disabled','');
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  expect(state.tasks[0].settings.wechat_delivery?.mode).toBe('handoff');
   await expect(page.getByRole('button',{name:'检测连接与权限',exact:true})).toHaveCount(0);
 });
 
@@ -460,31 +491,31 @@ test('success and error notices expire after three seconds with countdown and ex
 
 test('optional illustration settings persist and keep image models separate from writing',async({page},testInfo)=>{
   const state=await mockPlatform(page),task=makeTask('article','task-pictures');state.tasks.push(task);
+  await page.route('**/api/picture-sources/unsplash',route=>route.fulfill({json:{key_configured:false}}));
   await page.route('**/api/models',route=>route.fulfill({json:[...models,{...models[0],id:'image-model',name:'专用图片模型',protocol:'images',image_edit:true}]}));
-  await page.goto('/#task/task-pictures');
+  await page.goto('/#task/task-pictures');await openConfig(page,'AI 模型');await expect(page.getByLabel('本任务使用的模型').locator('option')).toHaveCount(2);await expect(page.getByLabel('本任务使用的模型').locator('option[value="image-model"]')).toHaveCount(0);await finishConfig(page);await openConfig(page,'文章配图');
   const config=page.getByRole('group',{name:'文章配图配置'}).or(page.locator('.illustration-config'));
   await expect(page.getByRole('checkbox',{name:'启用智能配图'})).not.toBeChecked();
   await expect(page.getByLabel('配图使用的图片模型')).toHaveCount(0);
   await page.getByRole('checkbox',{name:'启用智能配图'}).check();
   await page.getByRole('button',{name:'AI 生成 按正文内容创作配图'}).click();
   await page.getByLabel('配图使用的图片模型').selectOption('image-model');
-  await expect(page.getByLabel('本任务使用的模型').locator('option')).toHaveCount(1);
   await page.getByLabel('正文配图数量').selectOption('2');await page.getByLabel('同时配置封面').uncheck();
   await page.getByLabel('生成图片比例').selectOption('portrait');await page.getByLabel('配图风格').fill('水彩插画，简洁留白');
-  await page.getByLabel('配图失败时').selectOption('pause');await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await page.getByLabel('配图失败时').selectOption('pause');await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
   await expect.poll(()=>task.settings.illustration?.count).toBe(2);
   expect(task.settings.illustration).toMatchObject({enabled:true,mode:'ai',model_id:'image-model',ratio:'portrait',cover:false,failure:'pause'});
-  await page.reload();await expect(page.getByLabel('配图风格')).toHaveValue('水彩插画，简洁留白');
+  await page.reload();await openConfig(page,'文章配图');await expect(page.getByLabel('配图风格')).toHaveValue('水彩插画，简洁留白');
   await page.getByRole('button',{name:'联网找图 按主体匹配相关实景图'}).click();
-  await expect(page.getByLabel('联网图片来源')).toHaveValue('licensed');
-  await page.getByLabel('联网图片来源').selectOption('web');await page.getByRole('button',{name:'保存配置',exact:true}).click();
-  await expect.poll(()=>task.settings.illustration?.web_source).toBe('web');
-  await page.reload();await expect(page.getByLabel('联网图片来源')).toHaveValue('web');
+  await expect(page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true})).toBeChecked();
+  await page.getByRole('checkbox',{name:'360 图片',exact:true}).check();await page.getByRole('checkbox',{name:'Unsplash',exact:true}).check();await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await expect.poll(()=>task.settings.illustration?.web_sources).toEqual(['commons','openverse','360','unsplash']);
+  await page.reload();await openConfig(page,'文章配图');await expect(page.getByRole('checkbox',{name:'360 图片',exact:true})).toBeChecked();await expect(page.getByRole('checkbox',{name:'Unsplash',exact:true})).toBeChecked();
   await config.scrollIntoViewIfNeeded();await config.screenshot({path:testInfo.outputPath('illustration-config-desktop.png')});
   await page.setViewportSize({width:390,height:844});
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await config.screenshot({path:testInfo.outputPath('illustration-config-mobile.png')});
-  await page.getByRole('checkbox',{name:'启用智能配图'}).uncheck();await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await page.getByRole('checkbox',{name:'启用智能配图'}).uncheck();await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
   await expect.poll(()=>task.settings.illustration?.enabled).toBe(false);
   expect(task.settings.illustration?.model_id).toBe('image-model');
 });

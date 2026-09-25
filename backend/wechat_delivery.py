@@ -63,12 +63,7 @@ def image_bytes(ident):
 
 
 def inline_image(ident):
-    """Preserve our bounded GIFs for body uploads; cover thumbnails remain JPEG."""
-    path=decoration_path(ident)
-    if path and path.suffix=='.gif':
-        content=path.read_bytes()
-        if len(content)>=1_000_000:raise ValueError('模板动图文件过大，请更换模板。')
-        return ident+'.gif',content,'image/gif'
+    """Prepare a WeChat-compatible body image."""
     return ident+'.jpg',image_bytes(ident),'image/jpeg'
 
 
@@ -141,13 +136,7 @@ def deliver(run_id,article,settings):
                         data['thumb_media_id']=result['media_id'];update(run_id,'preparing',data)
                     if ident not in data['images'] and ident in body_ids:
                         media=inline_image(ident)
-                        # uploadimg accepts only JPG/PNG. GIFs use the permanent
-                        # image material endpoint, which returns a Tencent-hosted URL.
-                        if media[2]=='image/gif':
-                            result=wechat_accounts.call(account,'material/add_material',params={'type':'image'},files={'media':media})
-                            if not result.get('media_id'):raise ValueError('微信未返回动图素材编号。')
-                            data.setdefault('animation_media',{})[ident]=result['media_id']
-                        else:result=wechat_accounts.call(account,'media/uploadimg',files={'media':media})
+                        result=wechat_accounts.call(account,'media/uploadimg',files={'media':media})
                         if urlsplit(result.get('url','')).scheme not in ('https','http'):raise ValueError('微信未返回有效的正文图片地址。')
                         data['images'][ident]=result['url'];update(run_id,'preparing',data)
                 body=article_export.html_body(doc,data['images'],wechat=True)

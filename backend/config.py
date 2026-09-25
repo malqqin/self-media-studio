@@ -14,7 +14,7 @@ API_BASE = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip
 def ai_ready() -> bool:
     from .model_config import current
     connection=current()
-    return bool(connection['model'] and connection['api_key'])
+    return bool(connection['model'] and connection['api_key'] and connection.get('protocol') in ('responses','chat_completions'))
 
 
 def ffmpeg_path() -> str:

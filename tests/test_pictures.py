@@ -237,3 +237,29 @@ def test_web_search_outage_uses_available_library(client,monkeypatch):
     report=client.get('/api/pictures/search?query=City&source=web&details=true').json()
     assert [p['status'] for p in report['providers']]==['error','empty','success']
     assert report['items'][0]['provider']=='Openverse'
+
+
+def test_selected_sources_filter_unrelated_images_deduplicate_and_report_failure(client,monkeypatch):
+    good={'title':'AI 大模型与神经网络','url':'https://photos.example.com/ai.jpg','page_url':'https://photos.example.com/ai','provider':'360 图片'}
+    coffee={**good,'title':'瑞幸咖啡抹茶','url':'https://photos.example.com/coffee.jpg'}
+    calls=[]
+    def bing(q):calls.append(('bing',q));return [coffee]
+    def so(q):calls.append(('360',q));return [good,good]
+    monkeypatch.setattr(pictures,'search_bing',bing)
+    monkeypatch.setattr(pictures,'search_360',so)
+    monkeypatch.setattr(pictures,'search_baidu',lambda q:(_ for _ in ()).throw(ValueError('百度图片限制了自动访问')))
+    monkeypatch.setattr(pictures,'search_commons',lambda q:pytest.fail('unselected source was called'))
+    report=client.get('/api/pictures/search',params={'query':'AI大模型图片','sources':['bing','360','baidu'],'details':'true'}).json()
+    assert len(report['items'])==1 and report['items'][0]['url']==good['url']
+    assert report['providers'][0]['excluded']==1
+    assert [p['status'] for p in report['providers']]==['empty','success','error']
+    assert all(q=='AI大模型图片' for _,q in calls)
+    assert client.get('/api/pictures/search',params={'query':'AI','sources':['unknown']}).status_code==422
+
+
+def test_360_and_baidu_decode_original_images(monkeypatch):
+    monkeypatch.setattr(pictures,'fetch_public',lambda *a,**k:(json.dumps({'list':[{'title':'AI 大模型','img':'https://example.com/original.jpg','thumb':'https://example.com/thumb.jpg','link':'https://example.com/source'}]}).encode(),''))
+    result=pictures.search_360('AI大模型')[0]
+    assert result['url'].endswith('/original.jpg') and result['page_url'].endswith('/source')
+    monkeypatch.setattr(pictures,'fetch_public',lambda *a,**k:(json.dumps({'antiFlag':1,'message':'Forbid spider access'}).encode(),''))
+    with pytest.raises(ValueError,match='限制了自动访问'):pictures.search_baidu('AI大模型')

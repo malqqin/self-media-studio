@@ -1,0 +1,11 @@
+[
+  {"id":"deepseek","name":"DeepSeek","url":"https://api.deepseek.com/v1","hint":"DeepSeek 官方 API，支持文本创作与推理。"},
+  {"id":"doubao","name":"豆包 · 火山方舟","url":"https://ark.cn-beijing.volces.com/api/v3","hint":"使用火山方舟 API Key；若目录未列出已开通模型，可手动填写模型 ID 或 ep- 接入点。"},
+  {"id":"qwen","name":"通义千问 · 百炼","url":"https://dashscope.aliyuncs.com/compatible-mode/v1","hint":"默认北京地域。海外或工作空间专属 Key 请在高级设置中修改对应地址；万相生图/视频使用专用接口。"},
+  {"id":"zhipu","name":"智谱 GLM","url":"https://open.bigmodel.cn/api/paas/v4","hint":"使用通用 API Key，Coding Plan 的专属地址和权限可能不同。"},
+  {"id":"kimi","name":"Kimi · 月之暗面","url":"https://api.moonshot.cn/v1","hint":"使用月之暗面开放平台 API Key。"},
+  {"id":"siliconflow","name":"硅基流动","url":"https://api.siliconflow.cn/v1","hint":"一个 Key 可获取多个模型系列；目录权限和实际调用权限以服务商为准。"},
+  {"id":"minimax","name":"MiniMax","url":"https://api.minimaxi.com/v1","hint":"默认国内开放平台。若未开放模型目录，请切换手动填写模型 ID。"},
+  {"id":"openai","name":"OpenAI","url":"https://api.openai.com/v1","hint":"支持文本及 Images 生图接口，按账号实际返回的模型目录选择。"},
+  {"id":"custom","name":"OpenAI 兼容","url":"","hint":"填写服务商 API 基础地址及 Key，可接入兼容的文本、生图模型或本地网关。"}
+]
