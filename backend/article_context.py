@@ -7,7 +7,7 @@ from .article_models import ArticleProfile
 
 def require_editable(c,ident,version):
     value=worker.require(c,ident,version)
-    run=c.execute('SELECT * FROM task_runs WHERE content_id=?',(ident,)).fetchone()
+    run=c.execute('SELECT * FROM task_runs WHERE content_id=%s',(ident,)).fetchone()
     if run:
         from . import task_store
         task_store.require(c,run['task_id'])
@@ -19,7 +19,7 @@ def require_editable(c,ident,version):
 def source_snapshot(c,body):
     result=[]
     for ident in body.topic_ids:
-        topic=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone())
+        topic=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone())
         if not topic:raise ValueError('所选资料已不存在，请重新选择。')
         for source in topic.get('sources',[]):
             if not any(s['id']==source['id'] for s in result):
@@ -32,18 +32,18 @@ def source_snapshot(c,body):
 
 def save(ident,body):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',ident)
         value,run=require_editable(c,ident,body.version)
         if body.action!='save' and not model_library.ready(value['input_data'].get('_model_id','default')):
             raise ValueError('请先配置本次作品使用的 AI 模型。')
         sources=source_snapshot(c,body)
         # Older versions predate source editing: they all used this same source
         # snapshot. Enrich them before the first change so restoration stays exact.
-        for row in c.execute('SELECT version,payload FROM article_versions WHERE article_id=?',(ident,)).fetchall():
+        for row in c.execute('SELECT version,payload FROM article_versions WHERE article_id=%s',(ident,)).fetchall():
             payload=json.loads(row['payload'])
             if 'source_data' not in payload:
                 payload.update(source_data=value['source_data'],mode=value['mode'])
-                c.execute('UPDATE article_versions SET payload=? WHERE article_id=? AND version=?',(db.dump(payload),ident,row['version']))
+                c.execute('UPDATE article_versions SET payload=%s WHERE article_id=%s AND version=%s',(db.dump(payload),ident,row['version']))
         inp={**value['input_data'],**body.model_dump(exclude={'version','action','subject'}),'_subject':body.subject}
         for key in ('_rewrite','_context_action','_angle_request','_angle_outline_stale'):inp.pop(key,None)
         inp['_context_revision']=body.version+1
@@ -57,7 +57,7 @@ def save(ident,body):
                       note='选题与资料已保存，正在重新创作。' if body.action!='save' else '选题与资料已更新，当前内容保留，可按新方向重新生成。')
         worker.snapshot(c,ident,'修改本次选题与资料'+('，重新生成'+{'angles':'角度','outline':'大纲','article':'全文'}[body.action] if body.action!='save' else ''))
         if run:
-            for topic_id in body.topic_ids:c.execute('INSERT OR IGNORE INTO task_sources VALUES (?,?,?)',(run['task_id'],topic_id,db.now()))
+            for topic_id in body.topic_ids:c.execute('INSERT INTO task_sources(task_id,topic_id,at) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING',(run['task_id'],topic_id,db.now()))
         article_stream.reset(ident)
     if body.action!='save':worker.executor.submit(worker.run,ident)
     return worker.get(ident)
@@ -78,5 +78,5 @@ def collect(ident,body):
     with task_store.collection(run['task_id'],task['version']):
         ids,reports=task_sources.collect(run['task_id'],settings)
         with db.connect() as c:
-            topics=[db.topic(c.execute('SELECT * FROM topics WHERE id=?',(i,)).fetchone()) for i in ids]
+            topics=[db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(i,)).fetchone()) for i in ids]
     return {'topics':topics,'reports':reports}

@@ -1,3 +1,4 @@
+import {authMock} from './fixtures';
 import {task as makeTask,models} from './fixtures';
 import { test, expect, type Page } from '@playwright/test';
 import type { Article, ArticleDocument, ArticleProfile, Topic } from '../../src/types';
@@ -24,6 +25,7 @@ async function mockStudio(page:Page, existing=false){
   if(existing){article={...base(),status:'needs_review',stage:'review',progress:100,version:5,source_data:topic.sources,document:structuredClone(document),outline:{title:document.title,angle:'从熟悉的任务开始',sections:[{heading:document.sections[0].heading,points:'解释如何选任务'}],source_gaps:[]},checks:{issues:[],note:'模拟检查完成，请人工核验。'}};remember();}
   await page.route('**/api/**',async route=>{
     const request=route.request();const path=new URL(request.url()).pathname.replace('/api','');const method=request.method();const body=request.postDataJSON();
+    if(path.startsWith('/auth/'))return route.fulfill({json:authMock(path)});
     const reply=(json:unknown,status=200)=>route.fulfill({json,status});
     if(method!=='GET')writes.push({path,body});
     if(path==='/models')return reply(models);
@@ -186,11 +188,13 @@ test('unsaved text survives polling and cancelled navigation on desktop and mobi
 test('reference link is selected and its source snapshot enters the new article',async({page})=>{
   const state=await mockStudio(page);
   await page.goto('/#task/task-ui-test');
+  await page.getByRole('button',{name:'配置参考资料',exact:true}).click();
   await page.getByRole('button',{name:'参考文章创作'}).click();
   await page.getByText('立即导入指定文章',{exact:true}).click();
   await page.getByLabel('文章链接',{exact:true}).fill('https://example.com/article');
   await page.getByRole('button',{name:'读取文章并选中'}).click();
   await expect(page.locator('.article-source-picker input')).toBeChecked();
+  await page.getByRole('button',{name:'完成设置',exact:true}).click();
   await page.getByRole('button',{name:'AI 辅助创作'}).click();
   await expect(page.locator('.angle-card')).toBeVisible({timeout:12000});
   expect(state.article?.mode).toBe('reference');

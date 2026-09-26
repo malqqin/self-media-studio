@@ -17,7 +17,7 @@ class Connection(BaseModel):
 
 
 def key():
-    path=config.DATA/'unsplash-connection.json'
+    path=config.data_dir()/'unsplash-connection.json'
     with model_config.lock:
         if not path.exists():return ''
         try:
@@ -70,14 +70,14 @@ def save(body):
         result=request('search/photos',{'query':'nature','per_page':1,'content_filter':'high'},access_key=access_key)
         if not isinstance(result.get('results'),list):raise ValueError('Unsplash 未返回有效的搜索结果，原连接已保留。')
     with model_config.lock:
-        path=config.DATA/'unsplash-connection.json'
+        path=config.data_dir()/'unsplash-connection.json'
         if body.clear_key:
             path.unlink(missing_ok=True)
             return {'key_configured':False}
         value={'protected_key':base64.b64encode(model_config.secret_transform(access_key.encode())).decode(),
                'protection':'windows-dpapi' if os.name=='nt' else 'file-permissions'}
-        config.DATA.mkdir(parents=True,exist_ok=True)
-        temporary=config.DATA/('.unsplash-'+uuid.uuid4().hex+'.tmp')
+        config.data_dir().mkdir(parents=True,exist_ok=True)
+        temporary=config.data_dir()/('.unsplash-'+uuid.uuid4().hex+'.tmp')
         try:
             fd=os.open(temporary,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
             with os.fdopen(fd,'w',encoding='utf-8') as stream:json.dump(value,stream)

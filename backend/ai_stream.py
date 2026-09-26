@@ -2,6 +2,7 @@
 from contextvars import ContextVar
 import json
 import httpx
+from . import model_http
 from .model_errors import ModelRequestError
 
 stream_sink = ContextVar('article_stream_sink', default=None)
@@ -11,7 +12,7 @@ def streamed_result(url, headers, payload, chat, emit):
     payload = {**payload, 'stream': True}
     if chat:payload['stream_options'] = {'include_usage': True}
     answer = ''; usage = {}; finish = None; terminal = None
-    with httpx.stream('POST', url, headers=headers, json=payload,
+    with model_http.stream('POST', url, headers=headers, json=payload,
                       timeout=httpx.Timeout(150, connect=15), follow_redirects=False) as response:
         if 300 <= response.status_code < 400:raise ModelRequestError('接口返回重定向，请填写最终 API 地址后再试。')
         response.raise_for_status()

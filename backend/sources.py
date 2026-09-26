@@ -146,7 +146,7 @@ def save_item(c,item,label,source_id):
                        **{k:item[k] for k in ('platform','heat','relevance_reason','access_note') if k in item}}}
     if item['full_text']:
         data['media']=[{'url':u,'page_url':link,'credit':label,'rights':'来源页关联图片；发布前核对图片署名与使用条件','filename':label+' 来源图片'} for u in item.get('images',[])[:5]]
-    count=c.execute('INSERT OR IGNORE INTO topics VALUES (?,?,?,?,?,?,?,?,?)',
+    count=c.execute('INSERT INTO topics(id,title,category,kind,source,published_at,discovered_at,score,data) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
                     (ident,item['title'],'general','live',label,item['published_at'],db.now(),70,db.dump(data))).rowcount
     return count,ident
 
@@ -156,17 +156,17 @@ def import_page(body):
     item={'url':body.url,'title':body.title,'text':body.text,'published_at':None,'full_text':True,'method':'manual'}
     updated=False
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'topic-import',body.url)
         added,ident=save_item(c,item,urlsplit(body.url).hostname,'manual')
         if not added:
-            existing=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone())
+            existing=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone())
             if not existing.get('page_data',{}).get('full_text'):
                 for key in ('id','title','category','kind','source','published_at','discovered_at','score'):existing.pop(key,None)
                 existing.pop('curation',None)
                 existing.update(angle=body.text[:400],evidence_status='手动导入正文 · 待核验',
                     page_data={'method':'manual','full_text':True,'images':[],'links':[],'captured_at':db.now()})
                 existing['sources'][0].update(text=body.text,title=body.title)
-                c.execute('UPDATE topics SET title=?,score=70,data=? WHERE id=?',(body.title,db.dump(existing),ident))
+                c.execute('UPDATE topics SET title=%s,score=70,data=%s WHERE id=%s',(body.title,db.dump(existing),ident))
                 updated=True
     message='正文已导入，保留原文链接，请核对内容与素材。' if added else '已为该网址补充完整正文，已有成片及审核记录保留。' if updated else '该网址已收录完整正文，未覆盖已有资料。'
     return {'added':added,'updated':updated,'topic_id':ident,'message':message}
@@ -190,7 +190,7 @@ def collect():
                 reason=str(error) if isinstance(error,ValueError) else f'HTTP {error.response.status_code}' if isinstance(error,httpx.HTTPStatusError) else '网络连接失败或来源无法读取'
                 message=f'{label}：{reason}'
             with db.connect() as c:
-                c.execute('INSERT INTO source_runs(source,status,count,message,at) VALUES (?,?,?,?,?)',(source_id,status,count,message,db.now()))
+                c.execute('INSERT INTO source_runs(source,status,count,message,at) VALUES (%s,%s,%s,%s,%s)',(source_id,status,count,message,db.now()))
             reports.append({'source':source_id,'url':source_config['url'],'status':status,'count':count,'message':message,'code':code})
         return {'reports':reports,'added':sum(r['count'] for r in reports)}
     finally:collection_lock.release()

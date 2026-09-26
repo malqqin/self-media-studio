@@ -33,10 +33,10 @@ def create(client,topic='sample-orbit',request='test-request-0001'):
 
 def ready(job):
     topic=worker.get_topic(job['topic_id'])
-    folder=config.DATA/'jobs'/job['id']/'v1';folder.mkdir(parents=True)
+    folder=config.data_dir()/'jobs'/job['id']/'v1';folder.mkdir(parents=True)
     for name in ['manifest.json','delivery.zip']:(folder/name).write_text('{}',encoding='utf-8')
     with db.connect() as c:
-        c.execute('UPDATE jobs SET status=?,script=?,qa=?,artifacts=? WHERE id=?',
+        c.execute('UPDATE jobs SET status=%s,script=%s,qa=%s,artifacts=%s WHERE id=%s',
                   ('needs_review',db.dump(topic['seed_script']),db.dump({'passed':True}),
                    db.dump({'manifest':f'jobs/{job["id"]}/v1/manifest.json','bundle':f'jobs/{job["id"]}/v1/delivery.zip'}),job['id']))
     return topic['seed_script']
@@ -45,7 +45,7 @@ def ready(job):
 def test_idempotent_creation_without_daily_limit(client):
     with db.connect() as c:
         legacy=db.settings().model_dump();legacy.update(daily_limit=1,daily_ai_calls=1)
-        c.execute('UPDATE settings SET value=? WHERE id=1',(db.dump(legacy),))
+        c.execute('UPDATE settings SET value=%s WHERE id=1',(db.dump(legacy),))
     first=create(client)
     again=create(client)
     assert first['id']==again['id']
@@ -127,13 +127,13 @@ def test_upload_requires_rights_and_valid_image(client):
     assert upload.status_code==201,upload.text
     asset=client.get('/api/assets').json()[0]
     assert 'path' not in asset
-    assert len(list((config.DATA/'assets').glob('asset-*.jpg')))==1
+    assert len(list((config.data_dir()/'assets').glob('asset-*.jpg')))==1
     assert client.post('/api/assets',files={'file':('x.png',b'not image','image/png')},data={'rights':'本人原创拍摄'}).status_code==400
 
 
 def test_restart_preserves_script_and_requires_retry(client):
     job=create(client);script=ready(job)
-    with db.connect() as c:c.execute("UPDATE jobs SET status='running' WHERE id=?",(job['id'],))
+    with db.connect() as c:c.execute("UPDATE jobs SET status='running' WHERE id=%s",(job['id'],))
     worker.recover()
     recovered=worker.get_job(job['id'])
     assert recovered['status']=='failed' and recovered['script']==script
@@ -178,7 +178,7 @@ def test_real_ten_second_render_and_video_upload(client,tmp_path,mode):
     clip=response.json()
     assert clip['media_type']=='video/mp4' and 'path' not in clip
     assert client.get(f'/api/assets/{clip["id"]}/file',headers={'Range':'bytes=0-100'}).status_code==206
-    with db.connect() as c:clip=dict(c.execute('SELECT * FROM assets WHERE id=?',(clip['id'],)).fetchone())
+    with db.connect() as c:clip=dict(c.execute('SELECT * FROM assets WHERE id=%s',(clip['id'],)).fetchone())
     script=Script.model_validate(worker.get_topic('sample-orbit')['seed_script'])
     if mode=='images':selected=[picture,picture,picture]
     elif mode=='video':selected=[clip]
@@ -208,8 +208,8 @@ def test_ai_adapter_validates_and_tracks_calls_without_daily_limit(client,monkey
     monkeypatch.setattr(ai.httpx,'post',mocked)
     with db.connect() as c:
         legacy=db.settings().model_dump();legacy.update(daily_limit=1,daily_ai_calls=1)
-        c.execute('UPDATE settings SET value=? WHERE id=1',(db.dump(legacy),))
-        c.executemany('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (?,?,?,?,?)',
+        c.execute('UPDATE settings SET value=%s WHERE id=1',(db.dump(legacy),))
+        c.cursor().executemany('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (%s,%s,%s,%s,%s)',
                       [('previous',db.day(),'script','received',db.now())]*25)
     generated=ai.generate(topic,'test-ai-job')
     assert generated.title==topic['title']
@@ -228,7 +228,7 @@ def test_ai_rejects_unknown_curation_and_failed_fact_check(client,monkeypatch):
     from backend.models import Curation,FactCheck
     sample=worker.get_topic('sample-orbit')
     with db.connect() as c:
-        c.execute("UPDATE topics SET kind='live' WHERE id=?",(sample['id'],))
+        c.execute("UPDATE topics SET kind='live' WHERE id=%s",(sample['id'],))
     monkeypatch.setattr(ai,'request_structured',lambda *a:Curation(choices=[{'topic_id':'unknown','headline':'测试选题','angle':'足够长度的切入角度','reason':'足够长度的推荐理由','evidence':'This is an invalid evidence quote.'}],note=''))
     with pytest.raises(ValueError,match='未知'):ai.curate()
     assert worker.get_topic(sample['id'])['title']==sample['title']
@@ -241,7 +241,7 @@ def test_all_ai_entrypoints_work_after_previous_daily_ceiling(client,monkeypatch
     from backend.models import ModelConnection
     import httpx
     with db.connect() as c:
-        c.executemany('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (?,?,?,?,?)',
+        c.cursor().executemany('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (%s,%s,%s,%s,%s)',
                       [('previous',db.day(),'script','received',db.now())]*25)
     calls=[]
     answers={'connection_test':{'status':'ok'},'fact_check':{'supported':True,'issues':[]},'curation':{'choices':[],'note':'本次没有推荐'}}

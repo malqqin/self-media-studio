@@ -1,3 +1,4 @@
+import {authMock} from './fixtures';
 import {test,expect,type Page} from '@playwright/test';
 import type {Settings,Topic} from '../../src/types';
 
@@ -5,9 +6,13 @@ const emptySettings:Settings={account_name:'知序',sources:[],custom_sources:[]
 const topic:Topic={id:'feed-test',title:'网络采集的新发现',category:'astronomy',source:'science.example.com',kind:'live',angle:'这是一段来自网络的科学观察资料。',rights:'核对原始使用条件',sources:[{id:'source-test',title:'原文',publisher:'science.example.com',url:'https://science.example.com/article',text:'科学观测资料'}],published_at:'2026-09-22T00:00:00Z',discovered_at:'2026-09-22T00:00:00Z',evidence_status:'网页正文快照'};
 
 async function isolated(page:Page){
+  // Unrelated widgets must not fall through to the real authenticated server.
+  await page.route('**/api/**',route=>route.fulfill({json:[]}));
+  await page.route('**/api/auth/**',route=>route.fulfill({json:authMock(new URL(route.request().url()).pathname.replace('/api',''))}));
   const state={settings:structuredClone(emptySettings),topics:[] as Topic[],events:[] as string[]};
   await page.route('**/api/settings',route=>route.fulfill({json:state.settings}));
   await page.route('**/api/topics',route=>route.fulfill({json:state.topics}));
+  await page.route('**/api/source-catalog',route=>route.fulfill({json:[{id:'nasa',name:'NASA · 官方新闻',description:'NASA 官方订阅源',url:'https://www.nasa.gov/feed/',kind:'rss',category:'astronomy'}]}));
   await page.route('**/api/tasks',route=>route.fulfill({json:[]}));
   await page.route('**/api/assets',route=>route.fulfill({json:[]}));
   await page.route('**/api/jobs',route=>route.fulfill({json:[]}));

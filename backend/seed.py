@@ -68,5 +68,5 @@ def init():
                   'rights':'NASA 官方韦布图片 · 保留署名并人工核验' if media else '原创科学示意，可替换成相关图片或视频',
                   'evidence_status':'内置资料摘录 · 最终需人工核验',
                   'seed_script':{'title':sample['title'],'description':sample['angle'],'title_lines':titles[sample['key']],'scenes':scenes}}
-            c.execute('INSERT INTO topics VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
+            c.execute('INSERT INTO topics(id,title,category,kind,source,published_at,discovered_at,score,data) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(owner_id,id) DO UPDATE SET data=excluded.data',
                       (sample['id'],sample['title'],sample['category'],'sample',sample['source'],None,db.now(),90-i,db.dump(data)))

@@ -9,6 +9,16 @@ DATA = Path(os.environ.get('STUDIO_DATA_DIR') or ROOT / 'data').resolve()
 MODEL = os.environ.get('OPENAI_MODEL', '').strip()
 API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
 API_BASE = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+DATABASE_SCHEMA = os.environ.get('DATABASE_SCHEMA', 'studio').strip()
+COOKIE_SECURE = os.environ.get('COOKIE_SECURE', 'false').lower() == 'true'
+ALLOWED_HOSTS = set(os.environ.get('ALLOWED_HOSTS', '127.0.0.1,localhost,testserver').split(','))
+ALLOWED_ORIGINS = set(os.environ.get('ALLOWED_ORIGINS', 'http://127.0.0.1:8765,http://localhost:8765,http://127.0.0.1:5173,http://localhost:5173').split(','))
+
+
+def data_dir() -> Path:
+    from .tenancy import require_user
+    return DATA / 'users' / require_user()
 
 
 def ai_ready() -> bool:

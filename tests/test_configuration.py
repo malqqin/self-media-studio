@@ -40,7 +40,7 @@ def test_secret_is_private_persistent_and_immediately_effective(client):
     assert body['api_key'] not in client.get('/api/settings').text
     assert 'api_key' not in client.get('/api/model-config').json()
     assert model_config.current()['api_key']==body['api_key']
-    if os.name=='nt':assert body['api_key'] not in (config.DATA/'model-config.json').read_text(encoding='utf-8')
+    if os.name=='nt':assert body['api_key'] not in (config.data_dir()/'model-config.json').read_text(encoding='utf-8')
     body.update(api_key='',model='changed-model')
     assert client.put('/api/model-config',json=body).status_code==200
     assert model_config.current()['api_key']=='test-secret-not-real'
@@ -76,7 +76,7 @@ def test_actual_adapter_protocol_payload_and_connection_test(client,monkeypatch,
     body=connection(protocol=protocol,output_mode=mode)
     result=client.post('/api/model-config/test',json=body)
     assert result.status_code==200 and result.json()['ok'],result.text
-    assert not (config.DATA/'model-config.json').exists() # testing doesn't save
+    assert not (config.data_dir()/'model-config.json').exists() # testing doesn't save
     assert client.get('/api/activity').json()['ai_calls']==1
     url,kwargs=calls[0]
     assert url.endswith('/responses' if protocol=='responses' else '/chat/completions')
@@ -192,6 +192,7 @@ def test_fresh_install_and_restart_have_no_topics_or_enabled_sources(client,monk
     response=client.post('/api/collect')
     assert response.status_code==400 and '保存并采集' in response.text
     assert client.get('/api/activity').json()['sources']==[]
+    client.__exit__(None,None,None)  # Stop the first scheduler before restarting.
     with TestClient(app) as restarted:
         assert restarted.get('/api/topics').json()==[]
         assert restarted.get('/api/settings').json()['sources']==[]
@@ -216,6 +217,7 @@ def test_source_settings_without_ai_preserve_preferences_and_execute_immediately
     topics=client.get('/api/topics').json()
     assert len(topics)==1 and topics[0]['kind']=='live'
     assert topics[0]['source']=='科学笔记'
+    client.__exit__(None,None,None)  # Stop the first scheduler before restarting.
     with TestClient(app) as restarted:
         assert restarted.get('/api/settings').json()['custom_sources'][0]['url']==custom()['url']
         assert restarted.get('/api/topics').json()==topics
@@ -257,10 +259,10 @@ def test_legacy_topics_hidden_new_sample_jobs_rejected_old_jobs_preserved(client
     with db.connect() as database:database.execute("UPDATE topics SET kind='live' WHERE id='sample-orbit'")
     job=client.post('/api/jobs',json={'topic_id':'sample-orbit','mode':'ai','request_id':'legacy-saved-job'}).json()
     with db.connect() as database:
-        database.execute("UPDATE jobs SET mode='sample',status='approved' WHERE id=?",(job['id'],))
+        database.execute("UPDATE jobs SET mode='sample',status='approved' WHERE id=%s",(job['id'],))
         database.execute("UPDATE topics SET kind='sample' WHERE id='sample-orbit'")
         prefs=client.get('/api/settings').json();prefs['production_mode']='sample'
-        database.execute('UPDATE settings SET value=? WHERE id=1',(db.dump(prefs),))
+        database.execute('UPDATE settings SET value=%s WHERE id=1',(db.dump(prefs),))
     assert client.get('/api/topics').json()==[]
     assert client.get('/api/settings').json()['production_mode']=='ai'
     assert client.get('/api/jobs').json()[0]['id']==job['id']

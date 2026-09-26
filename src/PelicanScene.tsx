@@ -34,7 +34,7 @@ export default function PelicanScene({onExplore}:{onExplore:()=>void}) {
     return ()=>{cancelAnimationFrame(frame);mq.removeEventListener('change',sync);narrow.removeEventListener('change',resize);document.removeEventListener('visibilitychange',sync);};
   },[paused]);
   return <div className="fn-hero">
-    <div className="fn-hero-copy"><div className="fn-kicker"><span/>A LITTLE WONDER, EVERY DAY.</div><h1>今天，<br/>让好奇心出发。</h1><p>把繁琐留在身后，<br/>把值得讲的科学，带给更多人。</p><button className="fn-main-action" onClick={onExplore}>翻开今日选题 <ArrowUpRight/></button></div>
+    <div className="fn-hero-copy"><h1>今天，<br/>让好奇心出发。</h1><p>把繁琐留在身后，<br/>把值得讲的科学，带给更多人。</p><button className="fn-main-action" onClick={onExplore}>翻开今日选题 <ArrowUpRight/></button></div>
     <div ref={art} className="scene-art" dangerouslySetInnerHTML={{__html:drawing}} />
     <div className="fn-hero-caption"><Wind/><span>沿途收集灵感，回来讲个好故事。</span></div>
     <button className="fn-motion" onClick={()=>setPaused(v=>!v)} disabled={reduced} aria-label={reduced?'已减少动态效果':paused?'播放动画':'暂停动画'} aria-pressed={paused||reduced}>{reduced?'已减少动态效果':paused?'播放动画':'暂停动画'}</button>

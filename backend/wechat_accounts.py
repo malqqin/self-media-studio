@@ -56,20 +56,20 @@ def whitelist_ip(message):
 
 
 def read():
-    path = config.DATA / 'wechat-accounts.json'
+    path = config.data_dir() / 'wechat-accounts.json'
     if not path.exists():return {}
     try:return json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):raise ValueError('公众号账号配置无法读取。') from None
 
 
 def write(values):
-    config.DATA.mkdir(parents=True, exist_ok=True)
-    path = config.DATA / ('.wechat-'+uuid.uuid4().hex+'.tmp')
+    config.data_dir().mkdir(parents=True, exist_ok=True)
+    path = config.data_dir() / ('.wechat-'+uuid.uuid4().hex+'.tmp')
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             json.dump(values, stream, ensure_ascii=False)
-        path.replace(config.DATA / 'wechat-accounts.json')
+        path.replace(config.data_dir() / 'wechat-accounts.json')
     finally:path.unlink(missing_ok=True)
 
 
@@ -159,7 +159,7 @@ def request(path, *, token=None, payload=None, files=None, params=None):
 
 
 def access_token(account):
-    key = (str(config.DATA), account['appid'], sha256(account['secret'].encode()).hexdigest())
+    key = (str(config.data_dir()), account['appid'], sha256(account['secret'].encode()).hexdigest())
     with lock:
         cached = tokens.get(key)
         if cached and cached[1] > time.monotonic()+60:return cached[0]

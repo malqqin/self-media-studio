@@ -44,7 +44,7 @@ def profile_get():
 @router.put('/article-profile')
 def profile_save(body: ArticleProfile):
     with db.connect() as c:
-        c.execute('UPDATE article_profiles SET value=?,updated_at=? WHERE id=1', (db.dump(body.model_dump()),db.now()))
+        c.execute('UPDATE article_profiles SET value=%s,updated_at=%s WHERE id=1', (db.dump(body.model_dump()),db.now()))
     return body
 
 
@@ -59,12 +59,12 @@ def import_link(body: ArticleLink):
     # A single explicit link imports one article, never follows an entire list.
     with db.connect() as c:
         _, ident = sources.save_item(c,item,urlsplit(body.url).hostname,'article-link')
-        topic = db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone())
+        topic = db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone())
     if not topic.get('page_data',{}).get('full_text'):
         from .models import ImportPage
         sources.import_page(ImportPage(url=body.url,title=item['title'],text=item['text']))
         with db.connect() as c:
-            topic = db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone())
+            topic = db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone())
     return topic
 
 
@@ -97,7 +97,7 @@ def detail(article_id: str):
         article['versions']=[{'version':r['version'],'stage':r['stage'],'at':r['at'],
                               'note':json.loads(r['payload']).get('note',''),
                               'restorable':any(json.loads(r['payload']).get(k) for k in ('angles','outline','document'))}
-                             for r in c.execute('SELECT * FROM article_versions WHERE article_id=? ORDER BY version DESC',(article_id,))]
+                             for r in c.execute('SELECT * FROM article_versions WHERE article_id=%s ORDER BY version DESC',(article_id,))]
     return article
 
 

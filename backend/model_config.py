@@ -28,9 +28,12 @@ def secret_transform(value: bytes, decrypt=False):
 
 
 def current():
-    path=config.DATA/'model-config.json'
+    path=config.data_dir()/'model-config.json'
     with lock:
         if not path.exists():
+            from .tenancy import require_user, LEGACY_OWNER
+            if require_user() != LEGACY_OWNER:
+                return {'name':'未配置模型','base_url':'https://api.openai.com/v1','model':'','protocol':'responses','output_mode':'json_schema','api_key':'','origin':'page'}
             return {'name':'环境变量配置','base_url':config.API_BASE,'model':config.MODEL,
                 'protocol':'responses','output_mode':'json_schema','api_key':config.API_KEY,'origin':'environment'}
         try:
@@ -68,11 +71,11 @@ def save(body):
         stored={k:v for k,v in data.items() if k not in ('api_key','origin')}
         stored['protected_key']=base64.b64encode(secret_transform(secret)).decode()
         stored['protection']='windows-dpapi' if os.name=='nt' else 'file-permissions'
-        config.DATA.mkdir(parents=True,exist_ok=True)
-        temporary=config.DATA/('.model-'+uuid.uuid4().hex+'.tmp')
+        config.data_dir().mkdir(parents=True,exist_ok=True)
+        temporary=config.data_dir()/('.model-'+uuid.uuid4().hex+'.tmp')
         try:
             fd=os.open(temporary,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
             with os.fdopen(fd,'w',encoding='utf-8') as stream:json.dump(stored,stream,ensure_ascii=False,indent=2)
-            temporary.replace(config.DATA/'model-config.json')
+            temporary.replace(config.data_dir()/'model-config.json')
         finally:temporary.unlink(missing_ok=True)
         return public(data)

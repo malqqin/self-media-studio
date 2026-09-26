@@ -35,7 +35,7 @@ def recent_topics(task_id,days):
     cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
     with db.connect() as c:
         rows=c.execute("""SELECT r.settings,a.document,a.outline,a.created_at FROM task_runs r
-            JOIN articles a ON a.id=r.content_id WHERE r.task_id=? AND a.created_at>=?
+            JOIN articles a ON a.id=r.content_id WHERE r.task_id=%s AND a.created_at>=%s
             AND a.document IS NOT NULL AND a.status!='failed' ORDER BY a.created_at DESC LIMIT 100""",(task_id,cutoff)).fetchall()
     result=[]
     for row in rows:

@@ -16,7 +16,10 @@ MAX_UPLOAD = 100_000_000
 
 def asset_path(asset):
     path = Path(asset['path'])
-    return path if path.is_absolute() else config.DATA / path
+    resolved=(path if path.is_absolute() else config.data_dir()/path).resolve()
+    if not resolved.is_relative_to(config.data_dir().resolve()):
+        raise ValueError('素材路径不属于当前用户。')
+    return resolved
 
 
 def safe_media_url(url):
@@ -46,7 +49,7 @@ def article_images(html, page_url, publisher):
 def store_asset(content, filename, rights, credit='', source_url=''):
     if len(content) > MAX_UPLOAD:
         raise ValueError('素材不能超过 100 MB。')
-    directory = config.DATA / 'assets'; directory.mkdir(parents=True, exist_ok=True)
+    directory = config.data_dir() / 'assets'; directory.mkdir(parents=True, exist_ok=True)
     digest = sha256(content).hexdigest()[:24]
     ident = 'asset-' + digest
     suffix = Path(filename).suffix.lower()
@@ -80,10 +83,10 @@ def store_asset(content, filename, rights, credit='', source_url=''):
     # Rights and credits can differ for the same bytes; do not overwrite another record.
     ident += '-' + sha256((rights + credit + source_url).encode()).hexdigest()[:8]
     with db.connect() as c:
-        c.execute('INSERT OR IGNORE INTO assets VALUES (?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO assets(id,filename,media_type,rights,credit,source_url,path,at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
                   (ident, filename[:150], media_type, rights, credit, source_url,
-                   target.relative_to(config.DATA).as_posix(), db.now()))
-        return dict(c.execute('SELECT * FROM assets WHERE id=?', (ident,)).fetchone())
+                   target.relative_to(config.data_dir()).as_posix(), db.now()))
+        return dict(c.execute('SELECT * FROM assets WHERE id=%s', (ident,)).fetchone())
 
 
 def prepare_assets(script, topic):
@@ -93,7 +96,7 @@ def prepare_assets(script, topic):
             # Cache by source page AND image URL so different views retain their identity.
             origin = item['url']
             with db.connect() as c:
-                cached = c.execute('SELECT * FROM assets WHERE source_url=?', (origin,)).fetchone()
+                cached = c.execute('SELECT * FROM assets WHERE source_url=%s', (origin,)).fetchone()
             if cached and asset_path(dict(cached)).is_file():
                 automatic.append(dict(cached))
             else:
@@ -106,7 +109,7 @@ def prepare_assets(script, topic):
     with db.connect() as c:
         for scene in script.scenes:
             if scene.asset_id:
-                row = c.execute('SELECT * FROM assets WHERE id=?', (scene.asset_id,)).fetchone()
+                row = c.execute('SELECT * FROM assets WHERE id=%s', (scene.asset_id,)).fetchone()
                 if not row: raise ValueError('引用素材不存在。')
                 assets[scene.asset_id] = dict(row)
     if topic['kind'] == 'live' and not assets:

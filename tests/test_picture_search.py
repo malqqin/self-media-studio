@@ -71,7 +71,7 @@ def test_provider_end_markers(monkeypatch):
 def save_candidate(**changes):
     ident='pic-'+uuid.uuid4().hex
     item={'url':'https://example.com/original.jpg','preview_url':'https://example.com/thumbnail.jpg','provider':'必应图片',**changes}
-    with db.connect() as c:c.execute('INSERT INTO picture_candidates VALUES (?,?,?)',(ident,db.dump(item),db.now()))
+    with db.connect() as c:c.execute('INSERT INTO picture_candidates(id,data,at) VALUES (%s,%s,%s)',(ident,db.dump(item),db.now()))
     return ident
 
 

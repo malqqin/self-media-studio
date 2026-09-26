@@ -1,10 +1,10 @@
 # 知序 · 自媒体创作平台
 
-本地运行的文章、视频和图片创作工作台。以任务组织创作：每个任务独立配置内容方向、参考资料、模型和执行时间，每次运行保留一份作品和配置快照。
+支持用户登录的文章、视频和图片创作平台，统一使用 PostgreSQL。以任务组织创作：每个任务独立配置内容方向、参考资料、模型和执行时间，每次运行保留一份作品和配置快照。
 
 ## 启动
 
-Windows 安装 Python 3.11+、Node.js 后运行：
+安装 Python 3.11+、Node.js 和 PostgreSQL 15+，创建普通数据库角色及数据库，在 `.env` 填写 `DATABASE_URL`（参考 `.env.example`）。应用会校验角色，拒绝超级用户和 BYPASSRLS 角色。Windows 然后运行：
 
 ```powershell
 .\start.ps1
@@ -12,7 +12,29 @@ Windows 安装 Python 3.11+、Node.js 后运行：
 
 打开 http://127.0.0.1:8765。首次启动安装依赖并构建前端。开发模式使用 `./start.ps1 -Dev`；修改前端后运行 `npm run build`，修改后端后重启服务。可用 `./start.ps1 -NoOpen` 只启动服务。
 
-数据、密钥、上传素材和生成作品保存在 `data/`，不进入 Git。升级前可用 SQLite backup 接口备份数据库。旧文章、视频和已启用的每日计划会迁入任务列表，保留原作品；迁移不会重新生成内容。
+任务、文章、版本、执行记录和用户数据保存在服务端 PostgreSQL；素材、模型配置和公众号会话按用户保存在 `data/users/<用户编号>/`，不进入 Git。初始管理员也有独立目录。客户端浏览器只持有 HttpOnly 会话 Cookie，不保存数据库。
+
+本机可用 `python -m scripts.local_postgres --bin-dir <PostgreSQL binaries/bin>` 创建项目独立开发数据库；使用 `127.0.0.1:55432`，不会接管系统中已有数据库。以后 `start.ps1` 会启动此集群。此开发助手仅供 Windows，本机连接凭证保存在忽略的 `data/postgres-local/local.json` 和 `.env`，不要上传。
+
+### 从现有 SQLite 迁移
+
+先停止旧服务，确认没有正在执行的任务，再运行 `python -m scripts.migrate_sqlite --source data/studio.sqlite3`。工具通过 SQLite backup API 保存一致性备份，将 22 张业务表以一个事务导入 PostgreSQL，逐字段校验、重置自增序列，复制并校验素材和配置文件。原 SQLite 和文件保留，不删除；导入报告位于 `data/backups/postgresql-import-report.json`。目标若已有业务数据会拒绝覆盖，完成后禁止重复导入。`--allow-incomplete` 仅用于明确接受现有任务恢复规则的离线迁移，绝不自动重提结果未知的公众号请求。
+
+### 账号与管理员
+
+首次打开显示管理员初始化页。读取服务器 `data/admin-setup.txt` 中的一次性凭证，设置管理员邮箱、昵称和密码；历史数据归此账号，公开注册无法抢占。初始化管理员依靠服务器凭证授权，其邮箱不会被伪标为已验证。凭证使用后删除。
+
+管理员进入“管理中心 → 平台设置”，配置 SMTP（SSL/TLS 或 STARTTLS）并发送测试邮件。新用户必须通过邮箱验证码才能创建账号并登录，支持找回密码、更改密码和退出登录。密码使用 Argon2id；验证码 10 分钟有效、最多尝试 5 次、每分钟最多发送一次；登录和发信有服务端限频。会话最长 7 天，改密码或停用用户会撤销旧会话。
+
+管理中心提供用户搜索、分页、启停、角色调整、注册开关、邮件配置和管理日志。停用用户后不再启动新任务或定时任务，已开始的任务可能继续完成。管理员不能停用自己，且至少保留一个有效管理员。用户不能读取其他人的任务、文章、素材、模型、公众号会话和流式进度；PostgreSQL 对全部业务表强制行级权限，唯一键和外键也包含用户身份。
+
+普通用户的自定义模型请求限定为公网 HTTPS，并固定解析后的公网地址，阻止访问服务器内网；管理员可继续连接本机模型。管理日志记录权限、注册开关和邮件配置修改，不包含密码、验证码或密钥。
+
+### 服务器部署与备份
+
+部署时配置真实 `ALLOWED_HOSTS`、`ALLOWED_ORIGINS`，通过 HTTPS 反向代理访问并设置 `COOKIE_SECURE=true`；应用端口和 PostgreSQL 端口仅对可信网络开放。当前仍使用单个 Uvicorn worker 和进程内任务队列，数据库锁会阻止第二个应用进程启动，以避免重复恢复或执行任务。PostgreSQL 为后续扩容打好基础，但多实例任务队列、配额、存储扩容和压力测试仍需另行实现，不能直接等同于几万人同时生成。
+
+备份使用 `pg_dump`（建议 custom 格式）并备份 `data/users/`、`data/server-secret.key` 和部署配置；恢复必须同时恢复文件和数据库。`server-secret.key` 用于保护 SMTP 等服务端密钥，请单独安全保管。原 Windows DPAPI 模型/微信配置不能直接在 Linux 解密，迁往不同机器或系统后需要重新填写模型密钥和扫码连接公众号；作品与任务不受影响。
 
 ## 从任务开始
 
@@ -146,7 +168,9 @@ backend/image_studio.py   图文排版与导出
 backend/worker.py         视频队列
 backend/short_render.py   FFmpeg 合成与质检
 backend/sources.py        网页 / RSS 与导入
-backend/db.py             SQLite 数据
+backend/db.py             PostgreSQL 连接池、事务、迁移与行级权限
+backend/auth.py           邮箱验证、会话、用户管理
+backend/migrations/      有版本及校验和的 SQL 迁移
 ```
 
 主要入口：`/api/tasks`、`/api/tasks/{id}`、`/api/tasks/{id}/collect`、`/api/tasks/{id}/run`、`/api/tasks/{id}/archive`、`/api/task-runs/{id}/retry`、`/api/models`、`/api/image-jobs/{id}`。文章和视频沿用原 `/api/articles`、`/api/jobs` 接口。
@@ -159,8 +183,8 @@ npm run build
 npm run test:ui
 ```
 
-浏览器测试需先启动服务，默认使用本机 Edge，可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 覆盖。交互测试模拟模型和业务 API，不改变用户作品或消耗真实模型额度。
+后端测试必须配置独立 `TEST_DATABASE_URL`，测试在随机 schema 中执行，结束后删除该测试 schema；若指向运行数据库会拒绝执行。浏览器测试需先启动服务，默认使用本机 Edge，可用 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` 覆盖。交互测试模拟登录、邮件、模型和业务 API，不改变用户作品或消耗真实模型额度。
 
 后端覆盖真实 FFmpeg 合成、PNG 生成、导出、来源采集、模型密钥保护、任务隔离、执行快照、定时幂等、失败恢复、版本冲突和历史迁移。浏览器覆盖新建三类任务、配置保存、模型库、文章完整流程、图片/视频编辑、未保存保护和移动端布局。
 
-服务仅绑定本机，使用 SQLite 与单个 Uvicorn worker；当前不支持多用户协作或直接公网部署。依赖记录在 `requirements.lock.txt` 与 `package-lock.json`。
+依赖记录在 `requirements.lock.txt` 与 `package-lock.json`。SQLite 仅在离线迁移工具中读取，运行时不再使用 SQLite。

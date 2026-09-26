@@ -32,7 +32,7 @@ def test_discover_readonly_normalizes_directory_and_does_not_generate(client,mon
     assert entries[2]['protocol']=='catalog'
     assert len(calls)==1 and calls[0].method=='GET' and str(calls[0].url)=='https://relay.example.com/v1/models'
     assert calls[0].headers['Authorization']=='Bearer test-secret-not-real'
-    assert not (config.DATA/'model-library.json').exists()
+    assert not (config.data_dir()/'model-library.json').exists()
     assert client.get('/api/activity').json()['ai_calls']==0
 
 

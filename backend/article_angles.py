@@ -5,7 +5,7 @@ from .article_context import require_editable
 
 def revise(ident,body,*,generate=False):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',ident)
         value,_=require_editable(c,ident,body.version)
         choices=(value['angles'] or {}).get('choices',[])
         if body.choice is not None and body.choice>=len(choices):raise ValueError('写作角度不存在，请刷新后重试。')

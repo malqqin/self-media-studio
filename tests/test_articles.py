@@ -177,13 +177,13 @@ def test_selected_form_guides_all_writing_stages(monkeypatch,form):
 def test_reference_and_notes_are_frozen_and_do_not_exclude_video_topics(client):
     topic=client.post('/api/sources/import',json={'url':'https://example.com/article','title':'公开报告','text':SOURCE_TEXT}).json()['topic_id']
     with db.connect() as c:
-        c.execute('INSERT INTO jobs(id,topic_id,request_id,status,stage,mode,settings,created_at,updated_at,day) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO jobs(id,topic_id,request_id,status,stage,mode,settings,created_at,updated_at,day) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   ('old-video',topic,'old-video-request','approved','review','ai','{}',db.now(),db.now(),db.day()))
     article=create(client,mode='reference',topic_ids=[topic],notes='这是我自己补充的一段工作实践笔记，需要一起纳入写作参考资料。')
     assert len(article['source_data'])==2
     assert article['source_data'][1]['id']=='personal-notes'
     with db.connect() as c:
-        c.execute("UPDATE topics SET title='changed',data='{}' WHERE id=?",(topic,))
+        c.execute("UPDATE topics SET title='changed',data='{}' WHERE id=%s",(topic,))
     assert worker.get(article['id'])['source_data'][0]['text']==SOURCE_TEXT
     assert worker.get(article['id'])['source_data'][0]['title']=='公开报告'
 
@@ -226,7 +226,7 @@ def test_recovery_and_partial_outline_retries(client,monkeypatch):
     failed=advance(client,ready,'angle',choice=0)
     assert failed['status']=='failed' and failed['angles']
     with db.connect() as c:
-        c.execute("UPDATE articles SET status='running' WHERE id=?",(article['id'],))
+        c.execute("UPDATE articles SET status='running' WHERE id=%s",(article['id'],))
     worker.recover()
     assert worker.get(article['id'])['status']=='failed'
     assert '服务中断' in worker.get(article['id'])['error']
@@ -618,7 +618,7 @@ def test_real_provider_stream_is_incremental_and_records_usage(client,monkeypatc
     assert article_stream.get('live-test')['partial']['text']=='实时文字'
     with db.connect() as c:
         usage=c.execute("SELECT status,input_tokens,output_tokens FROM ai_usage WHERE job_id='live-test'").fetchone()
-        assert tuple(usage)==('received',12,8)
+        assert tuple(usage.values())==('received',12,8)
     transport.close()
 
 
@@ -675,7 +675,7 @@ def test_rewrite_failure_reports_safe_specific_reason_and_preserves_original(cli
     assert 'do-not-echo-private-token' not in json.dumps(result) and 'test-private' not in json.dumps(result)
     assert result['document']==original and len(calls)==1
     with db.connect() as c:
-        assert c.execute('SELECT status FROM ai_usage WHERE job_id=? ORDER BY id DESC LIMIT 1',(article['id'],)).fetchone()[0]==usage_status
+        assert c.execute('SELECT status FROM ai_usage WHERE job_id=%s ORDER BY id DESC LIMIT 1',(article['id'],)).fetchone()[0]==usage_status
 
 
 def test_article_event_endpoint_replays_current_preview_then_finishes(client,monkeypatch):

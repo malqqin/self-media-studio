@@ -14,16 +14,13 @@ lock = threading.RLock()
 
 
 def init(c):
-    c.execute('''CREATE TABLE IF NOT EXISTS wechat_deliveries (
-        run_id TEXT PRIMARY KEY REFERENCES task_runs(id), article_id TEXT NOT NULL,
-        account_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
-        data TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)''')
+    return  # Managed by versioned migrations.
 
 
 def get(run_id, c=None):
     if c is None:
         with db.connect() as conn:return get(run_id,conn)
-    row=c.execute('SELECT * FROM wechat_deliveries WHERE run_id=?',(run_id,)).fetchone()
+    row=c.execute('SELECT * FROM wechat_deliveries WHERE run_id=%s',(run_id,)).fetchone()
     if not row:return None
     value=dict(row);value['data']=json.loads(value['data']);return value
 
@@ -41,16 +38,16 @@ def update(run_id,status,data,error=None):
     states={'preparing':'running','drafting':'running','submitting':'running','publishing':'publishing',
             'draft':'wechat_draft','published':'published','failed':'failed','uncertain':'failed','awaiting_publish':'awaiting_publish'}
     with db.connect() as c:
-        c.execute('UPDATE wechat_deliveries SET status=?,data=?,error=?,updated_at=? WHERE run_id=?',
+        c.execute('UPDATE wechat_deliveries SET status=%s,data=%s,error=%s,updated_at=%s WHERE run_id=%s',
                   (status,db.dump(data),error,db.now(),run_id))
-        c.execute('UPDATE task_runs SET status=?,stage=?,error=?,updated_at=? WHERE id=?',
+        c.execute('UPDATE task_runs SET status=%s,stage=%s,error=%s,updated_at=%s WHERE id=%s',
                   (states[status],'delivery',error if states[status]=='failed' else None,db.now(),run_id))
 
 
 def image_bytes(ident):
     path=decoration_path(ident)
     if not path:
-        with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=?',(ident,)).fetchone()
+        with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=%s',(ident,)).fetchone()
         if not row or not row['media_type'].startswith('image/'):raise ValueError('请为自动发布选择有效的默认封面图片。')
         path=asset_path(dict(row))
     if not path.is_file():raise ValueError('所选发布图片文件不存在，请重新上传。')
@@ -93,7 +90,7 @@ def _prepare(run_id,article,settings):
           'title':doc['title'],'document':doc,'author':delivery.author,
           'cover_asset_id':doc.get('cover_asset_id') or delivery.cover_asset_id,'images':{}}
     with db.connect() as c:
-        c.execute('INSERT INTO wechat_deliveries VALUES (?,?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO wechat_deliveries(run_id,article_id,account_id,mode,status,data,error,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (run_id,article['id'],delivery.account_id,delivery.mode,'preparing',db.dump(data),None,db.now(),db.now()))
     return get(run_id)
 
@@ -103,7 +100,7 @@ def deliver(run_id,article,settings):
         value=get(run_id)
         if value and value['status']=='failed' and not value['data'].get('media_id') and value['data']['article_version']!=article['version']:
             # No draft was accepted: an explicitly edited/rechecked revision may replace the failed snapshot.
-            with db.connect() as c:c.execute('DELETE FROM wechat_deliveries WHERE run_id=?',(run_id,))
+            with db.connect() as c:c.execute('DELETE FROM wechat_deliveries WHERE run_id=%s',(run_id,))
             value=None
         value=value or _prepare(run_id,article,settings)
         data=value['data'];status=value['status']
@@ -208,7 +205,7 @@ def tick():
     try:
         cutoff=(datetime.now(timezone.utc)-timedelta(seconds=25)).isoformat()
         with db.connect() as c:
-            ids=[r['run_id'] for r in c.execute("SELECT run_id FROM wechat_deliveries WHERE status='publishing' AND updated_at<? ORDER BY updated_at LIMIT 5",(cutoff,))]
+            ids=[r['run_id'] for r in c.execute("SELECT run_id FROM wechat_deliveries WHERE status='publishing' AND updated_at<%s ORDER BY updated_at LIMIT 5",(cutoff,))]
         for ident in ids:refresh(ident)
     finally:lock.release()
 

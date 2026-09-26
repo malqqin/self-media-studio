@@ -1,3 +1,4 @@
+import {authMock} from './fixtures';
 import {test,expect,type Page} from '@playwright/test';
 import {settings,taskSettings,models,task as makeTask} from './fixtures';
 import type {CreationTask,ImageJob,TaskRun} from '../../src/types';
@@ -9,6 +10,7 @@ export async function mockPlatform(page:Page){
   const state={tasks:[] as CreationTask[],writes:[] as {path:string;body:any}[],image:null as ImageJob|null};
   await page.route('**/api/**',async route=>{
     const req=route.request(),path=new URL(req.url()).pathname.replace('/api',''),body=req.postDataJSON(),method=req.method();
+    if(path.startsWith('/auth/'))return route.fulfill({json:authMock(path)});
     const reply=(json:unknown,status=200)=>route.fulfill({json,status});
     if(method!=='GET')state.writes.push({path,body});
     if(path==='/settings')return reply(settings);
@@ -56,6 +58,22 @@ test('home creates named tasks of each type and filters task list',async({page},
   await page.locator('.task-filters').getByRole('button',{name:'图片',exact:true}).click();await expect(page.locator('.task-card')).toHaveCount(1);
   await page.getByRole('button',{name:'首页',exact:true}).click();await page.screenshot({path:testInfo.outputPath('platform-home.png'),fullPage:true});
   expect(state.tasks).toHaveLength(3);expect(errors).toEqual([]);
+});
+
+test('main pages and creation dialog remove decorative English headings and their empty spacing',async({page},testInfo)=>{
+  const state=await mockPlatform(page);state.tasks.push(makeTask('article','heading-task'));
+  const removed=['SELF MEDIA STUDIO','YOUR IDEAS, TAKING SHAPE','RECENT PROJECTS','ALL PROJECTS','MATERIAL LIBRARY','MODEL LIBRARY','PUBLISHING ACCOUNTS','A NEW BEGINNING'];
+  const expectRemoved=async()=>{for(const text of removed)await expect(page.getByText(text,{exact:true})).toHaveCount(0);};
+  await page.goto('/');await expectRemoved();
+  for(const name of ['任务列表','素材库','我的模型','发布账号']){
+    await page.getByRole('button',{name,exact:true}).click();await expectRemoved();
+  }
+  const main=await page.locator('main').boundingBox(),pageTitle=await page.getByRole('heading',{name:'发布账号',exact:true}).boundingBox();
+  expect(pageTitle!.y-main!.y).toBeLessThan(12);
+  await page.getByRole('button',{name:'新建任务',exact:true}).click();const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();await expectRemoved();
+  const dialogBox=await dialog.boundingBox(),dialogTitle=await dialog.getByRole('heading',{name:'新建创作任务',exact:true}).boundingBox();
+  expect(dialogTitle!.y-dialogBox!.y).toBeLessThan(55);
+  await page.screenshot({path:testInfo.outputPath('compact-headings.png'),fullPage:true});
 });
 
 test('configuration summaries open focused dialogs and preserve choices until saved',async({page},testInfo)=>{
@@ -283,15 +301,16 @@ test('task default template persists without changing the writing brief',async({
   const state=await mockPlatform(page),t=makeTask('article','task-template');state.tasks.push(t);
   t.settings.brief='介绍山西值得去的旅游景点';
   await page.goto('/#task/task-template');
-  await page.locator('.article-template-picker>summary').click();
+  await openConfig(page,'文章排版');
   await page.getByRole('radio',{name:'奶油纸笺',exact:true}).check();
   await page.getByText('展开完整示例预览',{exact:true}).click();
   await expect(page.locator('.template-sample-paper .article-layout')).toHaveAttribute('data-article-template','cream');
   await page.screenshot({path:testInfo.outputPath('task-templates-desktop.png'),fullPage:true});
+  await finishConfig(page);
   await page.getByRole('button',{name:'保存配置',exact:true}).click();
   expect(t.settings.article.template_id).toBe('cream');expect(t.settings.brief).toBe('介绍山西值得去的旅游景点');
-  await page.reload();await expect(page.locator('.article-template-picker>summary')).toContainText('奶油纸笺');
-  await page.setViewportSize({width:390,height:844});await page.locator('.article-template-picker>summary').click();
+  await page.reload();await expect(page.getByRole('button',{name:'配置文章排版'})).toContainText('奶油纸笺');
+  await page.setViewportSize({width:390,height:844});await openConfig(page,'文章排版');
   await expect(page.getByRole('radio',{name:'奶油纸笺',exact:true})).toBeChecked();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('task-templates-mobile.png'),fullPage:true});

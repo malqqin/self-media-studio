@@ -20,10 +20,20 @@ from .article_routes import router as article_router
 from . import article_worker
 from .platform_routes import router as platform_router
 from . import task_store, task_engine, pictures
+from . import auth
+from .tenancy import as_user, user_id
+
+
+def tick_users():
+    auth.cleanup()
+    for ident in auth.active_ids():
+        with as_user(ident):
+            try:tick()
+            except Exception:logging.exception('User scheduler failed')
 
 async def scheduler_loop(stop: asyncio.Event):
     while not stop.is_set():
-        try:await asyncio.to_thread(tick)
+        try:await asyncio.to_thread(tick_users)
         except Exception:logging.exception('Scheduler loop failed')
         try:await asyncio.wait_for(stop.wait(),timeout=30)
         except asyncio.TimeoutError:pass
@@ -31,36 +41,61 @@ async def scheduler_loop(stop: asyncio.Event):
 
 @asynccontextmanager
 async def lifespan(app):
-    db.init();pictures.init()
-    task_store.init();worker.recover();article_worker.recover();pictures.recover();task_engine.recover();stop=asyncio.Event()
-    with db.connect() as c:
-        c.execute("UPDATE daily_runs SET status='attention',message=? WHERE status='running'",('采集期间服务中断；请手动采集并选择制作。',))
-    task=asyncio.create_task(scheduler_loop(stop))
-    yield
-    stop.set();await task
-    from . import wechat_browser
-    wechat_browser.shutdown()
+    db.init()
+    with db.application_lock():
+        if (config.DATA/'studio.sqlite3').exists():
+            with db.system_connection() as c:
+                migrated=c.execute("SELECT 1 FROM server_settings WHERE key='sqlite_import'").fetchone()
+            if not migrated:
+                raise RuntimeError('检测到旧 SQLite 数据，请先停止旧服务并运行 python -m scripts.migrate_sqlite，再启动工作台。')
+        auth.initialize()
+        for ident in auth.active_ids():
+            with as_user(ident):
+                db.init_user();task_store.init()
+                worker.recover();article_worker.recover();pictures.recover();task_engine.recover()
+                with db.connect() as c:
+                    c.execute("UPDATE daily_runs SET status='attention',message=%s WHERE status='running'",('采集期间服务中断；请手动采集并选择制作。',))
+        stop=asyncio.Event();task=asyncio.create_task(scheduler_loop(stop))
+        try:yield
+        finally:
+            stop.set();await task
+            from . import wechat_browser
+            wechat_browser.shutdown()
 
 
 app=FastAPI(title='知序 · 自媒体创作平台',lifespan=lifespan)
 app.include_router(article_router)
 app.include_router(platform_router)
+app.include_router(auth.router)
 
 
 @app.middleware('http')
 async def local_guard(request: Request,call_next):
     host=request.headers.get('host','').split(':')[0]
-    if host not in ('127.0.0.1','localhost','testserver'):
-        return JSONResponse({'detail':'本地版本仅允许本机访问。'},status_code=403)
+    if host not in config.ALLOWED_HOSTS:
+        return JSONResponse({'detail':'此访问域名未配置。'},status_code=403)
     if request.method not in ('GET','HEAD','OPTIONS'):
         origin=request.headers.get('origin')
-        allowed={'http://127.0.0.1:8765','http://localhost:8765','http://127.0.0.1:5173','http://localhost:5173'}
+        allowed=config.ALLOWED_ORIGINS
         if origin and origin not in allowed:return JSONResponse({'detail':'拒绝跨站写入。'},status_code=403)
+        if request.headers.get('sec-fetch-site')=='cross-site':return JSONResponse({'detail':'拒绝跨站写入。'},status_code=403)
         if request.headers.get('content-length','0').isdigit() and int(request.headers.get('content-length','0'))>MAX_UPLOAD+1_000_000:
             return JSONResponse({'detail':'请求超过大小限制。'},status_code=413)
-    response=await call_next(request)
+    path=request.url.path
+    public_paths={'/api/health','/api/auth/status','/api/auth/me','/api/auth/login','/api/auth/logout',
+        '/api/auth/register','/api/auth/verify','/api/auth/forgot','/api/auth/reset','/api/auth/setup'}
+    token=None
+    if path.startswith('/api/') and path not in public_paths:
+        current=await asyncio.to_thread(auth.user_for_token,request.cookies.get(auth.COOKIE))
+        if not current:return JSONResponse({'detail':'请先登录。'},status_code=401)
+        request.state.user=current
+        token=user_id.set(current['id'])
+    try:response=await call_next(request)
+    finally:
+        if token is not None:user_id.reset(token)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
+    response.headers['X-Frame-Options']='DENY'
     if request.url.path.startswith('/api/'):response.headers['Cache-Control']='no-store'
     return response
 
@@ -72,7 +107,7 @@ async def validation_error(request,error):return JSONResponse({'detail':str(erro
 @app.exception_handler(RequestValidationError)
 async def input_error(request,error):
     # Validation responses must not echo API keys submitted in an invalid request.
-    return JSONResponse({'detail':[{'loc':e['loc'],'msg':e['msg'],'type':e['type']} for e in error.errors()]},status_code=422)
+    return JSONResponse({'detail':[{'loc':e['loc'],'msg':auth.validation_message(e) if request.url.path.startswith('/api/auth/') else e['msg'],'type':e['type']} for e in error.errors()]},status_code=422)
 
 
 def require_job(job_id):
@@ -82,10 +117,16 @@ def require_job(job_id):
 
 
 @app.get('/api/health')
-def health():
-    connection=model_config.public()
-    return {'ok':True,'name':'知序','version':'0.1.0','ai_ready':connection['ready'] and connection.get('protocol') in ('responses','chat_completions'),
-            'model':connection['model'] or None,'audio_mode':'silent','duration_seconds':10,'local_only':True}
+def health(request: Request):
+    with db.system_connection() as c:c.execute('SELECT 1')
+    current=auth.user_for_token(request.cookies.get(auth.COOKIE))
+    connection={}
+    if current:
+        with as_user(current['id']):connection=model_config.public()
+    return {'ok':True,'name':'知序','version':'0.2.0','database':'postgresql','authentication':True,
+            'ai_ready':bool(connection.get('ready') and connection.get('protocol') in ('responses','chat_completions')),
+            'model':connection.get('model') or None,
+            'audio_mode':'silent','duration_seconds':10,'local_only':config.ALLOWED_HOSTS <= {'127.0.0.1','localhost','testserver'}}
 
 
 @app.get('/api/model-config')
@@ -121,19 +162,19 @@ def settings_update(settings: Settings):
     if settings.schedule_enabled:
         if not (settings.sources or any(s.enabled for s in settings.custom_sources)):raise ValueError('请先在素材库配置并启用采集源，再开启每日计划。')
         if not config.ai_ready():raise ValueError('尚未配置 AI 密钥与模型，不能启用每日自动制作。')
-    with db.connect() as c:c.execute('UPDATE settings SET value=? WHERE id=1',(settings.model_dump_json(),))
+    with db.connect() as c:c.execute('UPDATE settings SET value=%s WHERE id=1',(settings.model_dump_json(),))
     return settings
 
 
 @app.put('/api/source-settings')
 def source_settings_update(body: SourceConfiguration):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'settings')
         settings=Settings.model_validate_json(c.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
         settings.sources=body.sources;settings.custom_sources=body.custom_sources
         if not (body.sources or any(s.enabled for s in body.custom_sources)):
             settings.schedule_enabled=False
-        c.execute('UPDATE settings SET value=? WHERE id=1',(settings.model_dump_json(),))
+        c.execute('UPDATE settings SET value=%s WHERE id=1',(settings.model_dump_json(),))
     return settings
 
 
@@ -157,8 +198,8 @@ def activity():
     with db.connect() as c:
         return {'sources':[dict(r) for r in c.execute('SELECT * FROM source_runs ORDER BY id DESC LIMIT 8')],
                 'daily':[dict(r) for r in c.execute('SELECT * FROM daily_runs ORDER BY day DESC LIMIT 7')],
-                'ai_calls':c.execute('SELECT count(*) FROM ai_usage WHERE day=?',(db.day(),)).fetchone()[0],
-                'jobs_today':c.execute('SELECT count(*) FROM jobs WHERE day=?',(db.day(),)).fetchone()[0]}
+                'ai_calls':c.execute('SELECT count(*) FROM ai_usage WHERE day=%s',(db.day(),)).fetchone()[0],
+                'jobs_today':c.execute('SELECT count(*) FROM jobs WHERE day=%s',(db.day(),)).fetchone()[0]}
 
 
 @app.get('/api/jobs')
@@ -174,8 +215,8 @@ def create_job(body: CreateJob):return worker.create(body.topic_id,body.mode,bod
 def job_detail(job_id: str):
     job=require_job(job_id)
     with db.connect() as c:
-        job['events']=[dict(r) for r in c.execute('SELECT * FROM job_events WHERE job_id=? ORDER BY id',(job_id,))]
-        job['reviews']=[dict(r) for r in c.execute('SELECT * FROM reviews WHERE job_id=? ORDER BY id',(job_id,))]
+        job['events']=[dict(r) for r in c.execute('SELECT * FROM job_events WHERE job_id=%s ORDER BY id',(job_id,))]
+        job['reviews']=[dict(r) for r in c.execute('SELECT * FROM reviews WHERE job_id=%s ORDER BY id',(job_id,))]
     if job.get('artifacts'):
         path=artifact_path(job,'manifest')
         if path.exists():job['manifest']=json.loads(path.read_text(encoding='utf-8'))
@@ -189,8 +230,8 @@ def retry_job(job_id: str):return worker.retry(job_id)
 @app.post('/api/jobs/{job_id}/review')
 def review_job(job_id: str,body: Review):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        job=db.job(c.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone())
+        db.lock(c,'job',job_id)
+        job=db.job(c.execute('SELECT * FROM jobs WHERE id=%s',(job_id,)).fetchone())
         if not job:raise HTTPException(404,'任务不存在。')
         if body.version!=job['version']:raise HTTPException(409,'版本已更新，请刷新后重新审核。')
         if job['status'] not in ('needs_review','approved'):raise HTTPException(409,'当前任务不在可审核状态。')
@@ -199,9 +240,9 @@ def review_job(job_id: str,body: Review):
             if not job['qa'] or not job['qa'].get('passed'):raise ValueError('自动质检未通过，不能标记为审核通过。')
         elif not body.note.strip():raise ValueError('请填写修改意见。')
         status='approved' if body.decision=='approve' else 'changes_requested'
-        c.execute('UPDATE jobs SET status=?,note=?,updated_at=? WHERE id=?',(status,body.note or '人工审核通过。',db.now(),job_id))
-        c.execute('INSERT INTO reviews(job_id,version,decision,facts_checked,rights_checked,note,at) VALUES (?,?,?,?,?,?,?)',
-                  (job_id,body.version,body.decision,body.facts_checked,body.rights_checked,body.note,db.now()))
+        c.execute('UPDATE jobs SET status=%s,note=%s,updated_at=%s WHERE id=%s',(status,body.note or '人工审核通过。',db.now(),job_id))
+        c.execute('INSERT INTO reviews(job_id,version,decision,facts_checked,rights_checked,note,at) VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                  (job_id,body.version,body.decision,int(body.facts_checked),int(body.rights_checked),body.note,db.now()))
         db.event(c,job_id,'review','审核通过。' if status=='approved' else '退回修改：'+body.note)
     return require_job(job_id)
 
@@ -209,15 +250,15 @@ def review_job(job_id: str,body: Review):
 @app.put('/api/jobs/{job_id}/script')
 def edit_script(job_id: str,body: EditScript):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        job=db.job(c.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone())
+        db.lock(c,'job',job_id)
+        job=db.job(c.execute('SELECT * FROM jobs WHERE id=%s',(job_id,)).fetchone())
         if not job:raise HTTPException(404,'任务不存在。')
         if job['status'] in ('queued','running'):raise HTTPException(409,'正在制作，暂不可修改。')
         if body.version!=job['version']:raise HTTPException(409,'脚本已被修改，请刷新后再保存。')
         validate_evidence(body.script,job['source_data'])
         for scene in body.script.scenes:
-            if scene.asset_id and not c.execute('SELECT 1 FROM assets WHERE id=?',(scene.asset_id,)).fetchone():raise ValueError('替换素材不存在。')
-        c.execute("UPDATE jobs SET script=?,version=version+1,status='draft',stage='script',progress=25,artifacts=NULL,qa=NULL,error=NULL,note=?,updated_at=? WHERE id=?",
+            if scene.asset_id and not c.execute('SELECT 1 FROM assets WHERE id=%s',(scene.asset_id,)).fetchone():raise ValueError('替换素材不存在。')
+        c.execute("UPDATE jobs SET script=%s,version=version+1,status='draft',stage='script',progress=25,artifacts=NULL,qa=NULL,error=NULL,note=%s,updated_at=%s WHERE id=%s",
                   (body.script.model_dump_json(),body.note,db.now(),job_id))
         db.event(c,job_id,'script','脚本已更新，旧版本审核失效。请重新制作。')
     return require_job(job_id)
@@ -226,8 +267,8 @@ def edit_script(job_id: str,body: EditScript):
 def artifact_path(job,kind):
     value=(job.get('artifacts') or {}).get(kind)
     if not value:raise HTTPException(404,'文件尚未生成。')
-    resolved=(config.DATA/value).resolve()
-    if not resolved.is_relative_to(config.DATA.resolve()):raise HTTPException(400,'无效路径。')
+    resolved=(config.data_dir()/value).resolve()
+    if not resolved.is_relative_to(config.data_dir().resolve()):raise HTTPException(400,'无效路径。')
     return resolved
 
 
@@ -261,10 +302,10 @@ async def upload_asset(file: UploadFile=File(...),rights: str=Form(...),credit: 
 
 @app.get('/api/assets/{asset_id}/file')
 def get_asset(asset_id: str):
-    with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=?',(asset_id,)).fetchone()
+    with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=%s',(asset_id,)).fetchone()
     if not row:raise HTTPException(404,'素材不存在。')
     path=asset_path(dict(row)).resolve()
-    if not path.is_relative_to(config.DATA.resolve()) or not path.is_file():raise HTTPException(404,'素材文件不存在。')
+    if not path.is_relative_to(config.data_dir().resolve()) or not path.is_file():raise HTTPException(404,'素材文件不存在。')
     return FileResponse(path,media_type=row['media_type'])
 
 

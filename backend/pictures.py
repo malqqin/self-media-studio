@@ -1,6 +1,6 @@
 """Bounded image search, immutable derivatives and persisted image requests."""
 import base64
-from concurrent.futures import ThreadPoolExecutor
+from .tenancy import ContextExecutor as ThreadPoolExecutor
 from functools import lru_cache
 import io
 import json
@@ -12,7 +12,7 @@ import httpx
 from bs4 import BeautifulSoup
 from PIL import Image
 from fastapi import HTTPException
-from . import db,media,model_library,unsplash
+from . import db,media,model_library,unsplash,model_http
 from .network import fetch_public, public_url
 from .picture_models import PictureRequest
 
@@ -34,27 +34,25 @@ def init(c=None):
         with db.connect() as own:
             init(own)
         return
-    c.executescript('''CREATE TABLE IF NOT EXISTS picture_candidates(id TEXT PRIMARY KEY,data TEXT NOT NULL,at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS asset_provenance(asset_id TEXT PRIMARY KEY REFERENCES assets(id),data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS picture_jobs(id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,request TEXT NOT NULL,status TEXT NOT NULL,asset_id TEXT,error TEXT,at TEXT NOT NULL,updated_at TEXT NOT NULL);''')
+    return  # Tables are created by db.init() versioned migrations.
 
 
 def asset(ident):
     with db.connect() as c:
-        row=c.execute('SELECT * FROM assets WHERE id=?',(ident,)).fetchone()
+        row=c.execute('SELECT * FROM assets WHERE id=%s',(ident,)).fetchone()
         if not row or not row['media_type'].startswith('image/'):raise ValueError('图片素材不存在，请重新选择。')
-        meta=c.execute('SELECT data FROM asset_provenance WHERE asset_id=?',(ident,)).fetchone()
+        meta=c.execute('SELECT data FROM asset_provenance WHERE asset_id=%s',(ident,)).fetchone()
     return {**{k:v for k,v in dict(row).items() if k!='path'},'provenance':json.loads(meta['data']) if meta else {'kind':'upload'}}
 
 
 def path(ident):
-    with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=?',(ident,)).fetchone()
+    with db.connect() as c:row=c.execute('SELECT * FROM assets WHERE id=%s',(ident,)).fetchone()
     if not row:raise ValueError('原图不存在。')
     return media.asset_path(dict(row))
 
 
 def record(value,metadata):
-    with db.connect() as c:c.execute('INSERT OR IGNORE INTO asset_provenance VALUES (?,?)',(value['id'],db.dump(metadata)))
+    with db.connect() as c:c.execute('INSERT INTO asset_provenance(asset_id,data) VALUES (%s,%s) ON CONFLICT DO NOTHING',(value['id'],db.dump(metadata)))
     return asset(value['id'])
 
 
@@ -62,12 +60,19 @@ def clean(value):
     return BeautifulSoup(str(value or ''),'html.parser').get_text(' ',strip=True)
 
 
-@lru_cache(maxsize=96)
 def preview(ident):
     """Fallback for saved search candidates only, never an arbitrary URL proxy."""
-    with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=?',(ident,)).fetchone()
+    with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=%s',(ident,)).fetchone()
     if not row:raise HTTPException(404,'搜索结果已不存在，请重新搜索。')
     item=json.loads(row['data'])
+    from . import config
+    return preview_cached(str(config.data_dir()),ident,db.dump(item))
+
+
+@lru_cache(maxsize=96)
+def preview_cached(tenant_path,ident,payload):
+    # Authorization happens on every request before consulting this tenant-scoped cache.
+    item=json.loads(payload)
     if item.get('provider')=='Unsplash':raise HTTPException(400,'Unsplash 预览请使用官方图片地址。')
     if not preview_slots.acquire(timeout=1):raise HTTPException(503,'预览请求较多，请稍后重试。')
     try:
@@ -224,7 +229,7 @@ def search_report(query,source='web',sources=None,page=1):
     with db.connect() as c:
         for item in results:
             item['id']='pic-'+uuid.uuid4().hex
-            c.execute('INSERT INTO picture_candidates VALUES (?,?,?)',(item['id'],db.dump(item),db.now()))
+            c.execute('INSERT INTO picture_candidates(id,data,at) VALUES (%s,%s,%s)',(item['id'],db.dump(item),db.now()))
     return {'items':results,'providers':providers,'query':query,'source':source,'sources':sources or [],
             'page':page,'has_more':any(p.get('has_more',False) for p in providers)}
 
@@ -255,10 +260,10 @@ def generate(body,job_id,connection=None):
         original=asset(body.asset_id);content=path(body.asset_id).read_bytes()
         kwargs={'data':{k:str(v) for k,v in payload.items()},'files':{'image':('image.jpg',content,original['media_type'])}};suffix='/images/edits'
     with db.connect() as c:
-        usage=c.execute('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (?,?,?,?,?)',(job_id,db.day(),'picture_'+body.action,'reserved',db.now())).lastrowid
+        usage=c.execute('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (%s,%s,%s,%s,%s) RETURNING id',(job_id,db.day(),'picture_'+body.action,'reserved',db.now())).fetchone()['id']
     try:
         # One billable request only. Never retry automatically or forward keys across redirects.
-        with httpx.Client(timeout=httpx.Timeout(240,connect=15),follow_redirects=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(240,connect=15),follow_redirects=False,**model_http.client_options()) as client:
             with client.stream('POST',connection['base_url'].rstrip('/')+suffix,headers=headers,**kwargs) as response:
                 if response.is_redirect:raise ValueError('图片接口返回重定向，请填写最终 API 地址。')
                 if response.status_code>=400:raise ValueError(f'图片接口请求失败（HTTP {response.status_code}），请检查模型名称、权限和图片尺寸。')
@@ -272,20 +277,20 @@ def generate(body,job_id,connection=None):
         elif item.get('url'):content=media.fetch_image(item['url'])
         else:raise ValueError('图片接口没有返回图片，请确认使用 Images 兼容接口。')
         value=media.store_asset(content,'AI 配图.jpg','AI 生成图片；模型：'+connection['model']+'；请求：'+job_id,'AI 生成')
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',('received',usage))
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',('received',usage))
         return record(value,{'kind':'ai','model':connection['model'],'prompt':body.prompt,'parent_asset_id':body.asset_id,'at':db.now()})
     except ValueError:
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',('failed',usage))
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',('failed',usage))
         raise
     except Exception:
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',('failed',usage))
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',('failed',usage))
         raise ValueError('图片生成未完成，可能仍在服务商侧处理。未自动重复请求；请检查连接或稍后重新生成。') from None
 
 
 def produce(body,job_id):
     if body.action in ('generate','edit'):return generate(body,job_id)
     if body.action=='import':
-        with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=?',(body.candidate_id,)).fetchone()
+        with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=%s',(body.candidate_id,)).fetchone()
         if not row:raise ValueError('搜索结果已不存在，请重新搜索。')
         source=json.loads(row['data'])
         if source.get('provider')=='Unsplash':unsplash.track_download(source)
@@ -304,40 +309,40 @@ def produce(body,job_id):
 
 
 def get(ident):
-    with db.connect() as c:row=c.execute('SELECT * FROM picture_jobs WHERE id=?',(ident,)).fetchone()
+    with db.connect() as c:row=c.execute('SELECT * FROM picture_jobs WHERE id=%s',(ident,)).fetchone()
     if not row:raise HTTPException(404,'图片处理记录不存在。')
     return {'id':ident,'status':row['status'],'error':row['error'],'asset':asset(row['asset_id']) if row['asset_id'] else None}
 
 
 def create(body,*,submit=True):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        old=c.execute('SELECT * FROM picture_jobs WHERE request_id=?',(body.request_id,)).fetchone()
+        db.lock(c,'picture-create',body.request_id)
+        old=c.execute('SELECT * FROM picture_jobs WHERE request_id=%s',(body.request_id,)).fetchone()
         if old:
             if json.loads(old['request'])!=body.model_dump():raise HTTPException(409,'此图片请求编号已用于其他操作。')
             ident=old['id']
         else:
             if body.action in ('generate','edit'):image_connection(body.model_id,body.action=='edit')
             ident='picture-'+uuid.uuid4().hex[:18]
-            c.execute('INSERT INTO picture_jobs VALUES (?,?,?,?,?,?,?,?)',(ident,body.request_id,body.model_dump_json(),'queued',None,None,db.now(),db.now()))
+            c.execute('INSERT INTO picture_jobs(id,request_id,request,status,asset_id,error,at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)',(ident,body.request_id,body.model_dump_json(),'queued',None,None,db.now(),db.now()))
     if submit:executor.submit(run,ident)
     return get(ident)
 
 
 def run(ident):
     with db.connect() as c:
-        if not c.execute("UPDATE picture_jobs SET status='running',updated_at=? WHERE id=? AND status='queued'",(db.now(),ident)).rowcount:return
-        body=PictureRequest.model_validate_json(c.execute('SELECT request FROM picture_jobs WHERE id=?',(ident,)).fetchone()[0])
+        if not c.execute("UPDATE picture_jobs SET status='running',updated_at=%s WHERE id=%s AND status='queued'",(db.now(),ident)).rowcount:return
+        body=PictureRequest.model_validate_json(c.execute('SELECT request FROM picture_jobs WHERE id=%s',(ident,)).fetchone()[0])
     try:
         value=produce(body,ident)
-        with db.connect() as c:c.execute("UPDATE picture_jobs SET status='ready',asset_id=?,updated_at=? WHERE id=?",(value['id'],db.now(),ident))
+        with db.connect() as c:c.execute("UPDATE picture_jobs SET status='ready',asset_id=%s,updated_at=%s WHERE id=%s",(value['id'],db.now(),ident))
     except Exception as error:
         message=str(error) if isinstance(error,ValueError) else '图片处理未完成，请稍后重试。'
-        with db.connect() as c:c.execute("UPDATE picture_jobs SET status='failed',error=?,updated_at=? WHERE id=?",(message,db.now(),ident))
+        with db.connect() as c:c.execute("UPDATE picture_jobs SET status='failed',error=%s,updated_at=%s WHERE id=%s",(message,db.now(),ident))
 
 
 def recover():
     with db.connect() as c:
-        c.execute("UPDATE picture_jobs SET status='failed',error=? WHERE status='running'",('服务中断，图片处理结果未确认，未自动重复请求。',))
+        c.execute("UPDATE picture_jobs SET status='failed',error=%s WHERE status='running'",('服务中断，图片处理结果未确认，未自动重复请求。',))
         queued=[r['id'] for r in c.execute("SELECT id FROM picture_jobs WHERE status='queued'")]
     for ident in queued:executor.submit(run,ident)

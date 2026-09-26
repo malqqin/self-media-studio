@@ -2,7 +2,7 @@ import io
 import json
 import uuid
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from backend.tenancy import ContextExecutor as ThreadPoolExecutor
 from datetime import datetime
 
 import pytest
@@ -167,10 +167,10 @@ def test_delete_protects_queued_run_active_article_and_collection(client):
     task=create(client);path='/api/tasks/'+task['id'];run=execute(client,task,'blank',run_now=False)
     assert client.request('DELETE',path,json={'version':task['version']}).status_code==409
     task_engine.run(run['id']);content=task_store.detail(task['id'])['runs'][0]['content_id']
-    with db.connect() as c:c.execute("UPDATE articles SET status='running' WHERE id=?",(content,))
+    with db.connect() as c:c.execute("UPDATE articles SET status='running' WHERE id=%s",(content,))
     assert client.request('DELETE',path,json={'version':task['version']}).status_code==409
     assert client.get('/api/tasks').json()[0]['is_running']
-    with db.connect() as c:c.execute("UPDATE articles SET status='draft' WHERE id=?",(content,))
+    with db.connect() as c:c.execute("UPDATE articles SET status='draft' WHERE id=%s",(content,))
     with task_store.collection(task['id'],task['version']):
         assert '采集' in client.request('DELETE',path,json={'version':task['version']}).json()['detail']
     assert client.request('DELETE',path,json={'version':task['version']}).status_code==200
@@ -199,7 +199,7 @@ def test_delete_waits_for_wechat_publication(client,wechat):
 
 def test_deleted_task_cannot_retry_failed_run(client):
     task=create(client);path='/api/tasks/'+task['id'];run=execute(client,task,'blank',run_now=False)
-    with db.connect() as c:c.execute("UPDATE task_runs SET status='failed' WHERE id=?",(run['id'],))
+    with db.connect() as c:c.execute("UPDATE task_runs SET status='failed' WHERE id=%s",(run['id'],))
     client.request('DELETE',path,json={'version':task['version']})
     assert client.post('/api/task-runs/'+run['id']+'/retry').status_code==404
 
@@ -482,7 +482,7 @@ def test_collection_report_freezes_all_eight_results_and_used_subset(client,monk
     assert len(run['settings']['_used_topic_ids'])==5
     assert all(item['url'] and item['summary'] for item in report['items'])
     first=report['items'][0]
-    with db.connect() as c:c.execute('UPDATE topics SET title=? WHERE id=?',('已改变的题目',first['topic_id']))
+    with db.connect() as c:c.execute('UPDATE topics SET title=%s WHERE id=%s',('已改变的题目',first['topic_id']))
     saved=task_store.detail(t['id'])['runs'][0]['reports'][0]['items']
     assert saved[0]['title']==first['title']
 
@@ -558,9 +558,9 @@ def test_reference_structure_requires_full_text_and_reaches_article_prompt(clien
     run=execute(client,t)
     assert '叙事结构' in article_worker.get(run['content_id'])['profile']['preferences']
     with db.connect() as c:
-        row=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(topic,)).fetchone())
+        row=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(topic,)).fetchone())
         payload={k:v for k,v in row.items() if k not in ('id','title','category','kind','source','published_at','discovered_at','score')}
-        payload['page_data']['full_text']=False;c.execute('UPDATE topics SET data=? WHERE id=?',(db.dump(payload),topic))
+        payload['page_data']['full_text']=False;c.execute('UPDATE topics SET data=%s WHERE id=%s',(db.dump(payload),topic))
     assert task_sources.material_topics(t['id'],TaskSettings.model_validate(t['settings']),[topic])==[]
 
 
@@ -774,7 +774,7 @@ def test_wechat_account_permissions_and_secrets(client,wechat):
     value=client.get('/api/wechat/accounts').json()[0]
     assert value['publish_ready'] and value['draft_ready'] and value['secret_configured']
     assert 'private-wechat-secret' not in client.get('/api/wechat/accounts').text
-    assert 'private-wechat-secret' not in (config.DATA/'wechat-accounts.json').read_text(encoding='utf-8')
+    assert 'private-wechat-secret' not in (config.data_dir()/'wechat-accounts.json').read_text(encoding='utf-8')
     response=client.put('/api/wechat/accounts/'+prefs['account_id'],json={'name':'改名','appid':'wx1234567890abcdef','secret':''})
     assert response.status_code==200 and response.json()['publish_ready']
     assert wechat_accounts.current(prefs['account_id'])['secret']=='private-wechat-secret'
@@ -1080,7 +1080,7 @@ def test_personal_automatic_handoff_freezes_content_and_never_calls_wechat(clien
     article=article_worker.get(run['content_id'])
     with db.connect() as c:
         edited={**article['document'],'title':'之后的本地修改'}
-        c.execute('UPDATE articles SET document=?,version=version+1 WHERE id=?',(db.dump(edited),article['id']))
+        c.execute('UPDATE articles SET document=%s,version=version+1 WHERE id=%s',(db.dump(edited),article['id']))
     assert client.get(content_path+'/content').json()==original
     wechat_delivery.deliver(run['id'],article_worker.get(article['id']),TaskSettings.model_validate(task['settings']))
     assert client.get(content_path+'/content').json()==original
@@ -1103,7 +1103,7 @@ def test_wechat_browser_session_encryption_and_forget(client,monkeypatch):
     monkeypatch.setattr(wechat_browser,'os',SimpleNamespace(name='nt'))
     wechat_browser._save(ident,SimpleNamespace(storage_state=lambda:state),'https://mp.weixin.qq.com/cgi-bin/home?token=private-token')
     assert wechat_browser._load(ident)['storage']==state
-    assert 'private-token' not in (config.DATA/'wechat-accounts.json').read_text(encoding='utf-8')
+    assert 'private-token' not in (config.data_dir()/'wechat-accounts.json').read_text(encoding='utf-8')
     public=client.get('/api/wechat/accounts').text
     assert 'cookie-private' not in public and 'protected_session' not in public and 'private-token' not in public
     assert client.get('/api/wechat/accounts').json()[0]['session_saved']
@@ -1174,9 +1174,9 @@ def test_revising_article_context_never_changes_schedule_run_snapshot_or_wechat_
     assert wechat_delivery.get(run['id'])['data']==before
     assert task_store.detail(task['id'])['settings']==settings_before
     with db.connect() as c:
-        stored=json.loads(c.execute('SELECT settings FROM task_runs WHERE id=?',(run['id'],)).fetchone()['settings'])
+        stored=json.loads(c.execute('SELECT settings FROM task_runs WHERE id=%s',(run['id'],)).fetchone()['settings'])
         assert stored['brief']==run['settings']['brief']
-        c.execute("UPDATE task_runs SET status='publishing' WHERE id=?",(run['id'],))
+        c.execute("UPDATE task_runs SET status='publishing' WHERE id=%s",(run['id'],))
     latest=article_worker.get(original['id'])
     blocked=client.put('/api/articles/'+original['id']+'/context',json={**body,'version':latest['version'],'action':'save'})
     assert blocked.status_code==409 and '交付' in blocked.text

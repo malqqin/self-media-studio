@@ -2,7 +2,7 @@
 #science-fieldnotes .connection-card{padding:25px;border:1px solid var(--ss-line);background:var(--ss-paper);border-radius:12px;min-width:0}
 #science-fieldnotes .connection-heading{display:flex;align-items:center;gap:12px;margin-bottom:14px}
 #science-fieldnotes .connection-heading>div{flex:1;min-width:0}
-#science-fieldnotes .connection-heading h2{font-size:23px;margin:5px 0 0}
+#science-fieldnotes .connection-heading h2{font-size:23px;margin:0}
 #science-fieldnotes .connection-heading .fn-label{font-size:9px;letter-spacing:1.4px}
 #science-fieldnotes .connection-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;background:var(--ss-soft);color:var(--ss-accent)}
 #science-fieldnotes .connection-icon svg{width:18px}

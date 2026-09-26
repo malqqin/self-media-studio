@@ -1,5 +1,5 @@
 """Persisted article stages, independent of the video renderer."""
-from concurrent.futures import ThreadPoolExecutor
+from .tenancy import ContextExecutor as ThreadPoolExecutor
 import logging
 import uuid
 import json
@@ -15,11 +15,11 @@ BUSY = ('queued', 'running')
 
 def get(article_id):
     with db.connect() as c:
-        return db.article(c.execute('SELECT * FROM articles WHERE id=?', (article_id,)).fetchone())
+        return db.article(c.execute('SELECT * FROM articles WHERE id=%s', (article_id,)).fetchone())
 
 
 def require(c, article_id, version=None):
-    value = db.article(c.execute('SELECT * FROM articles WHERE id=?', (article_id,)).fetchone())
+    value = db.article(c.execute('SELECT * FROM articles WHERE id=%s', (article_id,)).fetchone())
     if not value:
         raise HTTPException(404, '文章不存在。')
     if version is not None and value['version'] != version:
@@ -31,21 +31,21 @@ def require(c, article_id, version=None):
 
 def update(c, article_id, **values):
     values['updated_at'] = db.now()
-    c.execute('UPDATE articles SET '+','.join(f'{key}=?' for key in values)+' WHERE id=?', (*values.values(), article_id))
+    c.execute('UPDATE articles SET '+','.join(f'{key}=%s' for key in values)+' WHERE id=%s', (*values.values(), article_id))
 
 
 def snapshot(c, article_id, note):
     value = require(c, article_id)
     payload = {key: value[key] for key in ('angles', 'outline', 'document', 'checks', 'input_data','source_data','mode')}
     payload['note'] = note
-    c.execute('INSERT INTO article_versions(article_id,version,stage,payload,at) VALUES (?,?,?,?,?)',
+    c.execute('INSERT INTO article_versions(article_id,version,stage,payload,at) VALUES (%s,%s,%s,%s,%s)',
               (article_id, value['version'], value['stage'], db.dump(payload), db.now()))
 
 
 def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=None, illustration=None):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        existing = c.execute('SELECT * FROM articles WHERE request_id=?', (body.request_id,)).fetchone()
+        db.lock(c,'article-create',body.request_id)
+        existing = c.execute('SELECT * FROM articles WHERE request_id=%s', (body.request_id,)).fetchone()
         if existing:
             previous = db.article(existing)
             original = {key: previous['input_data'].get(key) for key in body.model_dump()}
@@ -55,12 +55,12 @@ def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=N
         from . import model_library
         if not (model_library.ready(model_id) if model_id else config.ai_ready()):
             raise ValueError('请先在“我的模型”配置连接，并在任务中选择。')
-        profile = profile_override or db.article_profile()
+        profile = profile_override or db.article_profile(c)
         if body.mode == 'original' and not (body.brief or profile.direction or len(body.notes) >= 20):
             raise ValueError('请填写公众号方向、写作主题或至少 20 字的笔记。')
         source_data = []
         for topic_id in body.topic_ids:
-            topic = db.topic(c.execute('SELECT * FROM topics WHERE id=?', (topic_id,)).fetchone())
+            topic = db.topic(c.execute('SELECT * FROM topics WHERE id=%s', (topic_id,)).fetchone())
             if not topic:
                 raise ValueError('所选资料已不存在，请重新选择。')
             for source in topic.get('sources', []):
@@ -76,7 +76,7 @@ def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=N
         input_data=body.model_dump()
         if model_id:input_data['_model_id']=model_id
         if illustration is not None:input_data['_illustration']=illustration.model_dump()
-        c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,created_at,updated_at,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,created_at,updated_at,note) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (article_id, body.request_id, 'queued', 'angles', 5, body.mode, 1, db.dump(profile.model_dump()),
                    db.dump(input_data), db.dump(source_data), now, now, '正在准备写作角度。'))
         snapshot(c, article_id, '创建文章，保存定位与来源快照')
@@ -88,7 +88,7 @@ def create(body: ArticleInput, *, submit=True, profile_override=None, model_id=N
 def enqueue(article_id, version, action, *, choice=None, section=None, instruction=None, submit=True, replace_existing=False,
             target='section',paragraph=None,document_value=None):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',article_id)
         value = require(c, article_id, version)
         from . import model_library
         if not model_library.ready(value['input_data'].get('_model_id','default')):
@@ -148,14 +148,14 @@ def enqueue(article_id, version, action, *, choice=None, section=None, instructi
 def validate_assets(c, doc):
     for ident in [doc.cover_asset_id]+[s.asset_id for s in doc.sections]:
         if ident:
-            asset = c.execute('SELECT media_type FROM assets WHERE id=?', (ident,)).fetchone()
+            asset = c.execute('SELECT media_type FROM assets WHERE id=%s', (ident,)).fetchone()
             if not asset or not asset['media_type'].startswith('image/'):
                 raise ValueError('文章配图必须选择已有图片素材。')
 
 
 def edit(article_id, version, *, outline_value=None, document_value=None, replace_existing=False):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',article_id)
         value = require(c, article_id, version)
         fields = {'version': version+1, 'checks': None, 'error': None}
         if outline_value is not None:
@@ -177,9 +177,9 @@ def edit(article_id, version, *, outline_value=None, document_value=None, replac
 
 def restore(article_id, version, target_version):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',article_id)
         require(c, article_id, version)
-        row = c.execute('SELECT payload FROM article_versions WHERE article_id=? AND version=?', (article_id, target_version)).fetchone()
+        row = c.execute('SELECT payload FROM article_versions WHERE article_id=%s AND version=%s', (article_id, target_version)).fetchone()
         if not row:
             raise ValueError('历史版本不存在。')
         old = json.loads(row['payload'])
@@ -197,7 +197,7 @@ def restore(article_id, version, target_version):
 
 def finish(article_id, **fields):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
+        db.lock(c,'article',article_id)
         value = require(c, article_id)
         update(c, article_id, version=value['version']+1, **fields)
         snapshot(c, article_id, fields.get('note', '生成完成'))
@@ -213,7 +213,7 @@ def run(article_id):
 
 def _run(article_id):
     with db.connect() as c:
-        claimed = c.execute("UPDATE articles SET status='running',error=NULL,updated_at=? WHERE id=? AND status='queued'", (db.now(), article_id)).rowcount
+        claimed = c.execute("UPDATE articles SET status='running',error=NULL,updated_at=%s WHERE id=%s AND status='queued'", (db.now(), article_id)).rowcount
     if not claimed:
         return
     value = get(article_id)
@@ -330,7 +330,7 @@ def _run(article_id):
 def recover():
     from .task_store import owns_queued
     with db.connect() as c:
-        c.execute("UPDATE articles SET status='failed',error=?,updated_at=? WHERE status='running'",
+        c.execute("UPDATE articles SET status='failed',error=%s,updated_at=%s WHERE status='running'",
                   ('服务中断，已保存内容保留。可从中断步骤重试。', db.now()))
         queued = [r['id'] for r in c.execute("SELECT id FROM articles WHERE status='queued'").fetchall() if not owns_queued(c,r['id'])]
     for article_id in queued:

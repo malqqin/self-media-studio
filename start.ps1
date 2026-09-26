@@ -11,7 +11,7 @@ if (!(Test-Path -LiteralPath $pythonPath)) {
     & $pythonPath -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
 }
-& $pythonPath -c "import playwright" 2>$null
+& $pythonPath -c "import playwright, psycopg, psycopg_pool, argon2, email_validator, cryptography" 2>$null
 if ($LASTEXITCODE -ne 0) {
     & $pythonPath -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) { throw 'Browser collection dependencies could not be installed.' }
@@ -30,8 +30,17 @@ if ($Dev -or !(Test-Path -LiteralPath (Join-Path $projectRoot 'dist/index.html')
 }
 $dataDirectory = Join-Path $projectRoot 'data'
 New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
+if (Test-Path -LiteralPath (Join-Path $dataDirectory 'postgres-local/local.json')) {
+    & $pythonPath -m scripts.local_postgres
+    if ($LASTEXITCODE -ne 0) { throw 'Local PostgreSQL could not start. See data/postgres-local/setup.log.' }
+}
+& $pythonPath -c "from backend import db; db.init(); db.close()"
+if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL is not ready. Configure DATABASE_URL in .env using a non-superuser role.' }
 $healthy = $false
-try { $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2; $healthy = ($health.ok -and $health.version -eq '0.1.0' -and $health.local_only) } catch {}
+try { $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2; $healthy = ($health.ok -and $health.version -eq '0.2.0' -and $health.authentication -and $health.database -eq 'postgresql') } catch {}
+if (!$healthy -and (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)) {
+    throw 'Port 8765 is in use by an older or different server. Stop it and migrate existing SQLite data before restarting.'
+}
 if (!$healthy) {
     # Keep the previous run's diagnostics before Start-Process replaces these files.
     $logArchiveDirectory = Join-Path $dataDirectory 'logs'

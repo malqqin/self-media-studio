@@ -2,7 +2,7 @@ import json
 import re
 import httpx
 
-from . import config, db
+from . import config, db, model_http
 from .models import Script, Curation, FactCheck
 from .model_errors import ModelRequestError, ModelOutputLimitError
 
@@ -55,11 +55,10 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
         if mode!='text':payload['text']={'format':fmt if mode=='json_schema' else {'type':'json_object'}}
         suffix='/responses'
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE')
-        reservation=c.execute('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (?,?,?,?,?)',
-                              (job_id,db.day(),kind,'reserved',db.now())).lastrowid
+        reservation=c.execute('INSERT INTO ai_usage(job_id,day,kind,status,at) VALUES (%s,%s,%s,%s,%s) RETURNING id',
+                              (job_id,db.day(),kind,'reserved',db.now())).fetchone()['id']
     def failure(message,code):
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',(code,reservation))
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',(code,reservation))
         return ModelRequestError(message,code)
     try:
         # No redirects, retries, or silent protocol fallbacks carrying credentials.
@@ -70,7 +69,7 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
                 {'Authorization':'Bearer '+connection['api_key']},payload,chat,
                 lambda text,force:sink(kind,text,force))
         else:
-            response=httpx.post(connection['base_url'].rstrip('/')+suffix,
+            response=model_http.post(connection['base_url'].rstrip('/')+suffix,
                 headers={'Authorization':'Bearer '+connection['api_key']},json=payload,
                 timeout=httpx.Timeout(150,connect=15),follow_redirects=False)
             if 300<=response.status_code<400:raise ModelRequestError('接口返回重定向，请填写最终 API 地址后再试。')
@@ -79,7 +78,7 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
         if not isinstance(result,dict):raise ModelRequestError('接口没有返回有效 JSON 对象。')
         with db.connect() as c:
             usage=result.get('usage') or {}
-            c.execute('UPDATE ai_usage SET status=?,input_tokens=?,output_tokens=? WHERE id=?',
+            c.execute('UPDATE ai_usage SET status=%s,input_tokens=%s,output_tokens=%s WHERE id=%s',
                       ('received',usage.get('input_tokens',usage.get('prompt_tokens',0)),usage.get('output_tokens',usage.get('completion_tokens',0)),reservation))
         if chat:
             choices=result.get('choices') or []
@@ -109,7 +108,7 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
     except (KeyError,TypeError,AttributeError,IndexError):
         raise failure('接口响应不兼容，请检查协议和输出格式。','invalid_response') from None
     except ModelRequestError as error:
-        with db.connect() as c:c.execute('UPDATE ai_usage SET status=? WHERE id=?',(error.code,reservation))
+        with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',(error.code,reservation))
         raise
     except ValueError as error:
         # A gateway may echo submitted secrets in malformed content; never return raw bodies.
@@ -164,6 +163,6 @@ def curate():
             record=known[choice.topic_id]
             for key in ['id','title','category','kind','source','published_at','discovered_at','score']:record.pop(key,None)
             record.update(angle=choice.angle,curation={'reason':choice.reason,'evidence':choice.evidence,'rank':rank+1,'at':db.now()})
-            c.execute('UPDATE topics SET title=?,score=?,data=? WHERE id=?',
+            c.execute('UPDATE topics SET title=%s,score=%s,data=%s WHERE id=%s',
                       (choice.headline,100-rank,db.dump(record),choice.topic_id))
     return {'selected':len(result.choices),'ids':[t.topic_id for t in result.choices],'note':result.note}

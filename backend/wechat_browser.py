@@ -9,6 +9,7 @@ import os
 import queue
 import re
 from pathlib import Path
+from contextvars import copy_context
 import threading
 import time
 from urllib.parse import urlsplit
@@ -30,7 +31,7 @@ def executable():
     return next((p for p in candidates if p and Path(p).is_file()),None)
 
 
-def _key(ident):return (str(config.DATA),ident)
+def _key(ident):return (str(config.data_dir()),ident)
 
 
 def _require(ident):
@@ -147,7 +148,7 @@ def start(ident):
         if sum(v['thread'].is_alive() for v in sessions.values())>=2:raise ValueError('已有两个公众号正在扫码，请先完成或取消登录。')
         value={'stop':threading.Event(),'actions':queue.Queue(maxsize=10)}
         _set(value,'starting','正在打开微信官方扫码登录页…')
-        thread=threading.Thread(target=_run,args=(ident,value),daemon=True,name='wechat-login')
+        thread=threading.Thread(target=copy_context().run,args=(_run,ident,value),daemon=True,name='wechat-login')
         value['thread']=thread;sessions[key]=value;thread.start()
         return public(value)
 

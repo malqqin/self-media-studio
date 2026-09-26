@@ -167,7 +167,7 @@ def task_records():return task_store.records()
 @router.post('/tasks',status_code=201)
 def create_task(body:CreateTask):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE');old=c.execute('SELECT * FROM creation_tasks WHERE request_id=?',(body.request_id,)).fetchone()
+        db.lock(c,'task-create',body.request_id);old=c.execute('SELECT * FROM creation_tasks WHERE request_id=%s',(body.request_id,)).fetchone()
         if old:
             task_store.require(c,old['id'])
             if old['name']!=body.name or old['kind']!=body.kind:raise HTTPException(409,'请求编号已用于其他任务。')
@@ -175,10 +175,10 @@ def create_task(body:CreateTask):
         else:
             ident='task-'+uuid.uuid4().hex[:18];settings=TaskSettings()
             if body.kind=='article':
-                settings.article=db.article_profile()
+                settings.article=db.article_profile(c)
                 settings.article_plan.mode='direction'
                 settings.materials.search_scope='wechat'
-            c.execute('INSERT INTO creation_tasks VALUES (?,?,?,?,?,?,?,?,?)',(ident,body.request_id,body.name,body.kind,1,settings.model_dump_json(),0,db.now(),db.now()))
+            c.execute('INSERT INTO creation_tasks(id,request_id,name,kind,version,settings,archived,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',(ident,body.request_id,body.name,body.kind,1,settings.model_dump_json(),0,db.now(),db.now()))
     return task_store.detail(ident)
 
 
@@ -197,22 +197,22 @@ def restore_task(ident:str,body:ArticleVersion):return task_store.restore(ident,
 @router.put('/tasks/{ident}')
 def save_task(ident:str,body:EditTask):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE');task=task_store.require(c,ident,body.version)
+        db.lock(c,'task',ident);task=task_store.require(c,ident,body.version)
         if body.settings.execution=='automatic':task_engine.validated(body.settings,task['kind'])
         for asset_id in body.settings.video.asset_ids+[body.settings.image.asset_id]:
-            if asset_id and not c.execute('SELECT 1 FROM assets WHERE id=?',(asset_id,)).fetchone():raise ValueError('所选素材已不存在。')
+            if asset_id and not c.execute('SELECT 1 FROM assets WHERE id=%s',(asset_id,)).fetchone():raise ValueError('所选素材已不存在。')
         for asset_id in body.settings.illustration.asset_ids:
-            if not c.execute("SELECT 1 FROM assets WHERE id=? AND media_type LIKE 'image/%'",(asset_id,)).fetchone():raise ValueError('配图素材必须为已有图片。')
-        c.execute('UPDATE creation_tasks SET name=?,settings=?,version=version+1,updated_at=? WHERE id=?',(body.name,body.settings.model_dump_json(),db.now(),ident))
+            if not c.execute("SELECT 1 FROM assets WHERE id=%s AND media_type LIKE %s",(asset_id,'image/%')).fetchone():raise ValueError('配图素材必须为已有图片。')
+        c.execute('UPDATE creation_tasks SET name=%s,settings=%s,version=version+1,updated_at=%s WHERE id=%s',(body.name,body.settings.model_dump_json(),db.now(),ident))
     return task_store.detail(ident)
 
 
 @router.post('/tasks/{ident}/archive')
 def archive_task(ident:str,body:ArticleVersion):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE');task=task_store.require(c,ident,body.version)
+        db.lock(c,'task',ident);task=task_store.require(c,ident,body.version)
         if any(r['status'] in ('queued','running','publishing') for r in task_store.runs(c,task)):raise HTTPException(409,'请等待正在执行的任务完成后归档。')
-        c.execute('UPDATE creation_tasks SET archived=?,version=version+1,updated_at=? WHERE id=?',(not task['archived'],db.now(),ident))
+        c.execute('UPDATE creation_tasks SET archived=%s,version=version+1,updated_at=%s WHERE id=%s',(int(not task['archived']),db.now(),ident))
     return task_store.detail(ident)
 
 
@@ -244,8 +244,8 @@ def image_file(ident:str,index:int,version:int):
     value=image_studio.get(ident)
     if value['version']!=version:raise HTTPException(409,'图片版本已更新，请刷新。')
     if value['status']!='needs_review' or not value['files'] or not 0<=index<len(value['files']):raise HTTPException(404,'图片尚未生成。')
-    path=(config.DATA/value['files'][index]).resolve()
-    if not path.is_relative_to(config.DATA) or not path.is_file():raise HTTPException(404,'图片文件不存在。')
+    path=(config.data_dir()/value['files'][index]).resolve()
+    if not path.is_relative_to(config.data_dir()) or not path.is_file():raise HTTPException(404,'图片文件不存在。')
     return FileResponse(path,media_type='image/png',filename=f'card-{index+1}.png')
 
 

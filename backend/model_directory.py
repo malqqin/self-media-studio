@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import config
+from . import config, model_http
 
 PROVIDERS = json.loads((config.ROOT/'shared/model-providers.json').read_text(encoding='utf-8'))
 TYPES = {'text', 'image', 'video', 'audio', 'embedding', 'unknown'}
@@ -85,7 +85,7 @@ def discover(connection):
     if not key:raise ValueError('请先填写 API Key，再获取模型列表。')
     url = connection['base_url'].rstrip('/')+'/models'
     try:
-        with httpx.Client(timeout=httpx.Timeout(25,connect=10),follow_redirects=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(25,connect=10),follow_redirects=False,**model_http.client_options()) as client:
             with client.stream('GET',url,headers={'Authorization':'Bearer '+key,'Accept':'application/json'}) as response:
                 status=response.status_code
                 if 300 <= status < 400:raise ValueError('模型目录返回重定向，请在高级设置填写最终 API 地址后重试。')

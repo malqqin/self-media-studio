@@ -28,7 +28,7 @@ def test_key_is_validated_protected_not_exposed_and_failed_replacement_keeps_old
     assert result.json()=={'key_configured':True}
     assert calls[0][0]=='search/photos' and calls[0][1]['per_page']==1
     assert unsplash.key()=='private-access-key'
-    raw=(config.DATA/'unsplash-connection.json').read_text()
+    raw=(config.data_dir()/'unsplash-connection.json').read_text()
     assert 'private-access-key' not in raw
     assert 'private-access-key' not in client.get('/api/picture-sources/unsplash').text
     assert client.put('/api/picture-sources/unsplash',json={'access_key':'wrong-key-value'}).status_code==400

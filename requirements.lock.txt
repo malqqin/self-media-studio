@@ -31,3 +31,16 @@ starlette==1.6.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.53.0
+
+# PostgreSQL and account authentication
+psycopg==3.3.6
+psycopg-binary==3.3.6
+psycopg-pool==3.3.3
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.1.0
+email-validator==2.3.0
+dnspython==2.8.0
+cryptography==46.0.7
+cffi==2.1.1
+pycparser==3.0
+tzdata==2026.4

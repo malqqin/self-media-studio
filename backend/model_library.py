@@ -12,7 +12,7 @@ selected = ContextVar('selected_model_connection', default=None)
 
 
 def read():
-    path = config.DATA/'model-library.json'
+    path = config.data_dir()/'model-library.json'
     if not path.exists():
         return {}
     try:
@@ -22,13 +22,13 @@ def read():
 
 
 def write(data):
-    config.DATA.mkdir(parents=True, exist_ok=True)
-    path = config.DATA/('.models-'+uuid.uuid4().hex+'.tmp')
+    config.data_dir().mkdir(parents=True, exist_ok=True)
+    path = config.data_dir()/('.models-'+uuid.uuid4().hex+'.tmp')
     try:
         fd = os.open(path, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
             json.dump(data,stream,ensure_ascii=False,indent=2)
-        path.replace(config.DATA/'model-library.json')
+        path.replace(config.data_dir()/'model-library.json')
     finally:
         path.unlink(missing_ok=True)
 

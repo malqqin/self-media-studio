@@ -14,7 +14,7 @@ previews = OrderedDict()
 revisions = count(1)
 
 
-def key(ident):return (str(config.DATA), ident)
+def key(ident):return (str(config.data_dir()), ident)
 
 
 def reset(ident):

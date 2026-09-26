@@ -52,7 +52,7 @@ def test_any_domain_and_category_free_configuration_collection_and_curation(clie
     # Old science-only settings no longer hide non-science content.
     with db.connect() as c:
         legacy=db.settings().model_dump();legacy['interests']=['physics']
-        c.execute('UPDATE settings SET value=? WHERE id=1',(db.dump(legacy),))
+        c.execute('UPDATE settings SET value=%s WHERE id=1',(db.dump(legacy),))
     assert len(client.get('/api/topics').json())==1
 
 

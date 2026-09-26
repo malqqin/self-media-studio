@@ -21,7 +21,7 @@ def images(doc):
             if decoration:
                 found[ident]=(f'images/{ident}{decoration.suffix}',decoration)
                 continue
-            row = c.execute('SELECT * FROM assets WHERE id=?', (ident,)).fetchone()
+            row = c.execute('SELECT * FROM assets WHERE id=%s', (ident,)).fetchone()
             if row and row['media_type'].startswith('image/'):
                 path = asset_path(dict(row))
                 if not path.is_file():
@@ -100,7 +100,7 @@ def bundle(article):
         archive.writestr('checks.json',db.dump(article['checks']))
         with db.connect() as c:
             metadata = [{key: row[key] for key in ('id','filename','rights','credit','source_url')}
-                        for ident in assets for row in c.execute('SELECT * FROM assets WHERE id=?',(ident,))]
+                        for ident in assets for row in c.execute('SELECT * FROM assets WHERE id=%s',(ident,))]
         metadata += [{'id':ident,'filename':name,'rights':'平台原创排版装饰，可随文章使用','credit':'','source_url':''} for ident,(name,_) in assets.items() if decoration_path(ident)]
         archive.writestr('assets.json',db.dump(metadata))
         archive.writestr('article.json',db.dump(doc))

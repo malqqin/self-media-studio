@@ -1,5 +1,5 @@
 """Manual executions and scheduled workflows, with durable per-task daily claims."""
-from concurrent.futures import ThreadPoolExecutor
+from .tenancy import ContextExecutor as ThreadPoolExecutor
 from datetime import datetime
 import json
 import logging
@@ -33,8 +33,8 @@ def validated(settings, kind, action='automatic'):
 
 def create_run(task_id,version,request_id,action,slot=None,submit=True):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE');task=task_store.require(c,task_id,version)
-        old=c.execute('SELECT * FROM task_runs WHERE request_id=?',(request_id,)).fetchone()
+        db.lock(c,'task',task_id);task=task_store.require(c,task_id,version)
+        old=c.execute('SELECT * FROM task_runs WHERE request_id=%s',(request_id,)).fetchone()
         if old:
             if old['task_id']!=task_id or old['action']!=action:raise HTTPException(409,'请求编号已用于其他执行。')
             return dict(old)
@@ -42,34 +42,34 @@ def create_run(task_id,version,request_id,action,slot=None,submit=True):
         if any(r['status'] in ('queued','running','publishing') for r in task_store.runs(c,task)):raise HTTPException(409,'该任务已有执行中的作品，请等待完成。')
         settings=TaskSettings.model_validate(task['settings']);validated(settings,task['kind'],action)
         ident='run-'+uuid.uuid4().hex[:18];now=db.now()
-        c.execute('INSERT INTO task_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO task_runs(id,task_id,request_id,schedule_slot,action,status,stage,settings,content_id,error,reports,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (ident,task_id,request_id,slot,action,'queued','prepare',settings.model_dump_json(),None,None,'[]',now,now))
-        c.execute('UPDATE creation_tasks SET updated_at=? WHERE id=?',(now,task_id))
+        c.execute('UPDATE creation_tasks SET updated_at=%s WHERE id=%s',(now,task_id))
     if submit:executor.submit(run,ident)
     return {'id':ident,'task_id':task_id,'status':'queued'}
 
 
 def persist(ident,**values):
     values['updated_at']=db.now()
-    with db.connect() as c:c.execute('UPDATE task_runs SET '+','.join(k+'=?' for k in values)+' WHERE id=?',(*values.values(),ident))
+    with db.connect() as c:c.execute('UPDATE task_runs SET '+','.join(k+'=%s' for k in values)+' WHERE id=%s',(*values.values(),ident))
 
 
 def blank_article(task,settings,ids,request_id):
     with db.connect() as c:
-        old=c.execute('SELECT id FROM articles WHERE request_id=?',(request_id,)).fetchone()
+        old=c.execute('SELECT id FROM articles WHERE request_id=%s',(request_id,)).fetchone()
     if old:return article_worker.get(old['id'])
     now=db.now();ident='article-'+uuid.uuid4().hex[:18]
     source_data=[]
     with db.connect() as c:
         for topic_id in ids:
-            row=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(topic_id,)).fetchone())
+            row=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(topic_id,)).fetchone())
             if row:source_data.extend(row['sources'])
         if settings.materials.notes:source_data.append({'id':'personal-notes','title':'个人笔记','text':settings.materials.notes,'url':'','publisher':'用户提供','full_text':True})
         title=settings.brief[:100] or task['name']
         doc=ArticleDocument(template_id=settings.article.template_id,title=title,titles=[title],summary='填写文章摘要',sections=[{'heading':'第一个观点','paragraphs':['在这里开始写作。']}])
         outline=ArticleOutline(title=title,angle='手动创作',sections=[{'heading':'第一个观点','points':'填写主要观点'}])
         inp={'mode':settings.materials.mode,'brief':settings.brief,'notes':settings.materials.notes,'topic_ids':ids,'request_id':request_id,'_model_id':settings.model_id,'_illustration':settings.illustration.model_dump()}
-        c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,outline,document,created_at,updated_at,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        c.execute('INSERT INTO articles(id,request_id,status,stage,progress,mode,version,profile,input_data,source_data,outline,document,created_at,updated_at,note) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (ident,request_id,'draft','review',100,settings.materials.mode,1,settings.article.model_dump_json(),db.dump(inp),db.dump(source_data),outline.model_dump_json(),doc.model_dump_json(),now,now,'手动草稿已创建，可以开始编辑。'))
         article_worker.snapshot(c,ident,'创建手动草稿')
     return article_worker.get(ident)
@@ -93,9 +93,9 @@ def drive_article(ident,automatic):
 
 def run(ident):
     with db.connect() as c:
-        claimed=c.execute("UPDATE task_runs SET status='running',updated_at=? WHERE id=? AND status='queued'",(db.now(),ident)).rowcount
+        claimed=c.execute("UPDATE task_runs SET status='running',updated_at=%s WHERE id=%s AND status='queued'",(db.now(),ident)).rowcount
         if not claimed:return
-        row=dict(c.execute('SELECT * FROM task_runs WHERE id=?',(ident,)).fetchone());task=task_store.require(c,row['task_id'])
+        row=dict(c.execute('SELECT * FROM task_runs WHERE id=%s',(ident,)).fetchone());task=task_store.require(c,row['task_id'])
     raw=json.loads(row['settings']);settings=TaskSettings.model_validate({k:v for k,v in raw.items() if not k.startswith('_')})
     automatic=row['action']=='automatic';blank=row['action']=='blank'
     try:
@@ -143,7 +143,7 @@ def run(ident):
                     data=[]
                     with db.connect() as c:
                         for topic_id in ids:
-                            topic=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(topic_id,)).fetchone())
+                            topic=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(topic_id,)).fetchone())
                             if topic:data.extend(topic['sources'])
                     if settings.materials.notes:data.append({'id':'notes','title':'个人笔记','text':settings.materials.notes,'url':''})
                     content=image_studio.create(settings.image,settings.brief or task['name'],data,ai=not blank,ident='image-'+ident.removeprefix('run-'))
@@ -157,7 +157,7 @@ def run(ident):
             else:
                 content=image_studio.get(content_id)
                 if content['status']=='failed':
-                    with db.connect() as c:c.execute("UPDATE image_jobs SET status='draft' WHERE id=? AND status='failed'",(content_id,))
+                    with db.connect() as c:c.execute("UPDATE image_jobs SET status='draft' WHERE id=%s AND status='failed'",(content_id,))
                     image_studio.render(content_id);content=image_studio.get(content_id)
             if task['kind']=='article' and automatic and settings.wechat_delivery.mode!='local' and content['status']!='failed':
                 persist(ident,stage='delivery')
@@ -171,15 +171,17 @@ def run(ident):
 
 def retry(ident):
     with db.connect() as c:
-        c.execute('BEGIN IMMEDIATE');row=c.execute('SELECT * FROM task_runs WHERE id=?',(ident,)).fetchone()
+        row=c.execute('SELECT * FROM task_runs WHERE id=%s',(ident,)).fetchone()
         if not row:raise HTTPException(404,'执行记录不存在。')
+        db.lock(c,'task',row['task_id'])
+        row=c.execute('SELECT * FROM task_runs WHERE id=%s',(ident,)).fetchone()
         task=task_store.require(c,row['task_id'])
         if row['status']!='failed':raise HTTPException(409,'当前执行无需重试。')
         if any(r['status'] in ('queued','running','publishing') for r in task_store.runs(c,task)):raise HTTPException(409,'任务已有正在执行的作品。')
         publication=wechat_delivery.get(ident,c)
         if publication and (publication['status']=='uncertain' or publication['data'].get('publish_id')):
             raise HTTPException(409,'本次已提交微信或提交结果待核对，不会重复发布；请查看发布记录和公众号后台。')
-        c.execute("UPDATE task_runs SET status='queued',error=NULL WHERE id=?",(ident,))
+        c.execute("UPDATE task_runs SET status='queued',error=NULL WHERE id=%s",(ident,))
     executor.submit(run,ident)
     return {'id':ident,'status':'queued'}
 
@@ -191,7 +193,7 @@ def tick(now=None):
         settings=TaskSettings.model_validate(task['settings'])
         if task['archived'] or settings.execution!='automatic' or local.isoweekday() not in settings.schedule.weekdays or local.strftime('%H:%M')<settings.schedule.time:continue
         with db.connect() as c:
-            if c.execute('SELECT 1 FROM task_runs WHERE task_id=? AND schedule_slot=?',(task['id'],today)).fetchone():continue
+            if c.execute('SELECT 1 FROM task_runs WHERE task_id=%s AND schedule_slot=%s',(task['id'],today)).fetchone():continue
         try:
             create_run(task['id'],task['version'],'scheduled-'+task['id']+'-'+today,'automatic',slot=today)
         except HTTPException as error:
@@ -201,14 +203,14 @@ def tick(now=None):
             # Invalid external model state gets a visible record once per day.
             with db.connect() as c:
                 now_text=db.now()
-                c.execute('INSERT OR IGNORE INTO task_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                c.execute('INSERT INTO task_runs(id,task_id,request_id,schedule_slot,action,status,stage,settings,content_id,error,reports,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
                           ('run-'+uuid.uuid4().hex[:18],task['id'],'scheduled-'+task['id']+'-'+today,today,'automatic','failed','prepare',settings.model_dump_json(),None,str(error),'[]',now_text,now_text))
 
 
 def recover():
     with db.connect() as c:
-        c.execute("UPDATE task_runs SET status='failed',stage='interrupted',error=?,updated_at=? WHERE status='running'",('服务中断，已有作品保留，可从执行记录继续。',db.now()))
-        c.execute("UPDATE image_jobs SET status='failed',error=? WHERE status='running'",('服务中断，请保存并重新生成。',))
+        c.execute("UPDATE task_runs SET status='failed',stage='interrupted',error=%s,updated_at=%s WHERE status='running'",('服务中断，已有作品保留，可从执行记录继续。',db.now()))
+        c.execute("UPDATE image_jobs SET status='failed',error=%s WHERE status='running'",('服务中断，请保存并重新生成。',))
         queued=[row['id'] for row in c.execute("SELECT id FROM task_runs WHERE status='queued'")]
         draft_images=[row['id'] for row in c.execute("SELECT id FROM image_jobs WHERE status='draft'")]
     wechat_delivery.recover()

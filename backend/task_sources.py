@@ -90,9 +90,9 @@ def collect(task_id, settings: TaskSettings, *, intent=None):
                             continue
                     with db.connect() as c:
                         count,ident=sources.save_item(c,item,target['name'],'task-'+task_id)
-                        c.execute('INSERT OR REPLACE INTO task_sources VALUES (?,?,?)',(task_id,ident,db.now()))
+                        c.execute('INSERT INTO task_sources(task_id,topic_id,at) VALUES (%s,%s,%s) ON CONFLICT(owner_id,task_id,topic_id) DO UPDATE SET at=excluded.at',(task_id,ident,db.now()))
                         added+=count;ids.append(ident)
-                        saved=db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone())
+                        saved=db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone())
                         items.append({'topic_id':ident,'title':saved['title'],'url':item['url'],
                                       'summary':saved['sources'][0]['text'][:600],'full_text':saved.get('page_data',{}).get('full_text',False),
                                       'publisher':item.get('publisher',saved['sources'][0].get('publisher','')),'published_at':item.get('published_at'),
@@ -113,8 +113,8 @@ def collect(task_id, settings: TaskSettings, *, intent=None):
             reports.append(report)
         with db.connect() as c:
             for ident in settings.materials.topic_ids:
-                if c.execute('SELECT 1 FROM topics WHERE id=?',(ident,)).fetchone():
-                    c.execute('INSERT OR REPLACE INTO task_sources VALUES (?,?,?)',(task_id,ident,db.now()))
+                if c.execute('SELECT 1 FROM topics WHERE id=%s',(ident,)).fetchone():
+                    c.execute('INSERT INTO task_sources(task_id,topic_id,at) VALUES (%s,%s,%s) ON CONFLICT(owner_id,task_id,topic_id) DO UPDATE SET at=excluded.at',(task_id,ident,db.now()))
                     ids.append(ident)
         return list(dict.fromkeys(ids)),reports
     finally:lock.release()
@@ -127,12 +127,12 @@ def material_topics(task_id, settings, collected_ids, automatic=False):
         with db.connect() as c:
             import json
             used=set()
-            for row in c.execute("SELECT r.settings FROM task_runs r LEFT JOIN articles a ON a.id=r.content_id LEFT JOIN jobs j ON j.id=r.content_id LEFT JOIN image_jobs i ON i.id=r.content_id WHERE r.task_id=? AND r.status NOT IN ('queued','running') AND COALESCE(a.status,j.status,i.status) IN ('needs_review','needs_revision','approved')",(task_id,)):
+            for row in c.execute("SELECT r.settings FROM task_runs r LEFT JOIN articles a ON a.id=r.content_id LEFT JOIN jobs j ON j.id=r.content_id LEFT JOIN image_jobs i ON i.id=r.content_id WHERE r.task_id=%s AND r.status NOT IN ('queued','running') AND COALESCE(a.status,j.status,i.status) IN ('needs_review','needs_revision','approved')",(task_id,)):
                 used.update(json.loads(row['settings']).get('_used_topic_ids',[]))
         ids=[ident for ident in ids if ident not in used]
     if settings.materials.mode=='reference' and settings.materials.reference_style!='facts':
         with db.connect() as c:
-            ids=[ident for ident in ids if (db.topic(c.execute('SELECT * FROM topics WHERE id=?',(ident,)).fetchone()) or {}).get('page_data',{}).get('full_text')]
+            ids=[ident for ident in ids if (db.topic(c.execute('SELECT * FROM topics WHERE id=%s',(ident,)).fetchone()) or {}).get('page_data',{}).get('full_text')]
     return ids[:5]
 
 
@@ -144,6 +144,6 @@ def note_topic(task_id, brief, notes):
     data={'sources':[source],'angle':value[:400],'rights':'用户上传素材，需核对使用权','evidence_status':'手动笔记',
           'page_data':{'full_text':True,'method':'manual','captured_at':db.now(),'images':[],'links':[]},'media':[]}
     with db.connect() as c:
-        c.execute('INSERT OR IGNORE INTO topics VALUES (?,?,?,?,?,?,?,?,?)',(ident,source['title'],'general','live','创作笔记',None,db.now(),70,db.dump(data)))
-        c.execute('INSERT OR REPLACE INTO task_sources VALUES (?,?,?)',(task_id,ident,db.now()))
+        c.execute('INSERT INTO topics(id,title,category,kind,source,published_at,discovered_at,score,data) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',(ident,source['title'],'general','live','创作笔记',None,db.now(),70,db.dump(data)))
+        c.execute('INSERT INTO task_sources(task_id,topic_id,at) VALUES (%s,%s,%s) ON CONFLICT(owner_id,task_id,topic_id) DO UPDATE SET at=excluded.at',(task_id,ident,db.now()))
     return ident

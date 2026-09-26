@@ -18,7 +18,7 @@ export function ModelSettings({onChanged}:{onChanged:()=>Promise<unknown>}){
       else{const result=await api<ModelConnection>('/model-config',send('PUT',body));setSaved(result);setDraft(result);setKey('');setClearKey(false);await onChanged();setNotice('模型配置已保存，立即生效。');}
     }catch(e){setError((e as Error).message);}finally{setBusy('');}
   };
-  return <section className="connection-card" id="model-settings"><div className="connection-heading"><span className="connection-icon"><KeyRound/></span><div><span className="fn-label">MODEL CONNECTION</span><h2>AI 模型连接</h2></div><span className={`ss-badge ${saved?.ready?'ss-green':'ss-amber'}`}>{saved?.ready?'已配置':'待配置'}</span></div>
+  return <section className="connection-card" id="model-settings"><div className="connection-heading"><span className="connection-icon"><KeyRound/></span><div><h2>AI 模型连接</h2></div><span className={`ss-badge ${saved?.ready?'ss-green':'ss-amber'}`}>{saved?.ready?'已配置':'待配置'}</span></div>
     <p className="connection-description">连接你的模型服务或中转站，用于筛选选题、写短标题与事实复核。</p>
 
     {!draft?<p className="inline-hint">正在读取配置…</p>:<form onSubmit={e=>{e.preventDefault();act();}}><fieldset disabled={!!busy} className="connection-fields">
@@ -78,7 +78,7 @@ export function SourceSettings({settings,onSaved,onCollected}:{settings:Settings
   const openImport=(url='')=>{setImportUrl(url);setShowImport(true);};
   const allFailed=!!result?.reports.length&&result.reports.every(r=>r.status==='error');
   const failures=result?.reports.filter(r=>r.status==='error').length||0;
-  return <section className="connection-card" id="source-settings"><div className="connection-heading"><span className="connection-icon"><Radio/></span><div><span className="fn-label">COLLECT FROM THE WEB</span><h2>采集数据配置</h2></div><span className="ss-badge">{selected.length+custom.filter(s=>s.enabled).length} 个启用</span></div>
+  return <section className="connection-card" id="source-settings"><div className="connection-heading"><span className="connection-icon"><Radio/></span><div><h2>采集数据配置</h2></div><span className="ss-badge">{selected.length+custom.filter(s=>s.enabled).length} 个启用</span></div>
     <p className="connection-description">输入任意领域的网页、公众号文章或订阅地址，保存后立即采集，无需选择分类或配置 AI。</p>
 
     <form onSubmit={e=>{e.preventDefault();save(true);}}><fieldset disabled={!!busy} className="connection-fields">

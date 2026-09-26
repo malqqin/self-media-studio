@@ -1,3 +1,4 @@
+import {authMock} from './fixtures';
 import {test,expect} from '@playwright/test';
 import {settings,models} from './fixtures';
 
@@ -5,6 +6,7 @@ test('model library saves multiple gateways and tests the unsaved connection',as
   const library=structuredClone(models),writes:any[]=[];let calls=0;
   await page.route('**/api/**',route=>{
     const req=route.request(),path=new URL(req.url()).pathname.replace('/api',''),body=req.postDataJSON();
+    if(path.startsWith('/auth/'))return route.fulfill({json:authMock(path)});
     if(path==='/settings')return route.fulfill({json:settings});
     if(path==='/tasks'||path==='/topics')return route.fulfill({json:[]});
     if(path.startsWith('/models')){
@@ -34,6 +36,7 @@ test('provider discovery in centered dialog shows types, brands and saves select
   let library:any[]=structuredClone(models),fetches=0,writes:any[]=[];
   await page.route('**/api/**',route=>{
     const req=route.request(),path=new URL(req.url()).pathname.replace('/api','');
+    if(path.startsWith('/auth/'))return route.fulfill({json:authMock(path)});
     if(path==='/settings')return route.fulfill({json:settings});
     if(path==='/tasks'||path==='/topics')return route.fulfill({json:[]});
     if(path.endsWith('/discover')){
@@ -73,6 +76,7 @@ test('provider discovery in centered dialog shows types, brands and saves select
 test('directory failure preserves key and offers manual entry without generating',async({page})=>{
   await page.route('**/api/**',route=>{
     const path=new URL(route.request().url()).pathname.replace('/api','');
+    if(path.startsWith('/auth/'))return route.fulfill({json:authMock(path)});
     if(path==='/settings')return route.fulfill({json:settings});
     if(path==='/models')return route.fulfill({json:models});
     if(path.endsWith('/discover'))return route.fulfill({status:400,json:{detail:'此服务商未开放模型目录，请手动填写。'}});
