@@ -2,9 +2,9 @@ import {ImagePlus} from 'lucide-react';
 import {AssetUpload} from './MaterialsPage';
 import type {Asset,IllustrationSettings,SavedModel} from './types';
 import './pictures.css';
-import PictureSources from './PictureSources';
+import PictureSources,{selectedPictureSources} from './PictureSources';
 
-export const defaultIllustration:IllustrationSettings={enabled:false,mode:'smart',web_source:'licensed',cover:true,count:3,style:'自然、简洁，与文章内容一致，不添加文字或水印',model_id:'',ratio:'landscape',failure:'skip',asset_ids:[]};
+export const defaultIllustration:IllustrationSettings={enabled:false,mode:'smart',web_source:'web',custom_sites:[],cover:true,count:3,style:'自然、简洁，与文章内容一致，不添加文字或水印',model_id:'',ratio:'landscape',failure:'skip',asset_ids:[]};
 export default function IllustrationConfiguration({value,models,assets,onChange,onAsset,onError}:{value?:IllustrationSettings;models:SavedModel[];assets:Asset[];onChange:(s:IllustrationSettings)=>void;onAsset:(a:Asset)=>void;onError:(s:string)=>void}){
   const s={...defaultIllustration,...value},patch=(v:Partial<IllustrationSettings>)=>onChange({...s,...v});
   return <section className={'connection-card illustration-config'+(s.enabled?' is-enabled':'')} aria-label="文章配图配置">
@@ -14,7 +14,7 @@ export default function IllustrationConfiguration({value,models,assets,onChange,
     {s.mode==='manual'?<><p className="inline-hint">按所选素材顺序分配：封面在前，正文在后。数量不足时其余位置留空。</p><div className="article-source-picker">{assets.filter(a=>a.media_type.startsWith('image/')).map(a=><label key={a.id}><input type="checkbox" checked={s.asset_ids.includes(a.id)} disabled={s.asset_ids.length>=20&&!s.asset_ids.includes(a.id)} onChange={()=>patch({asset_ids:s.asset_ids.includes(a.id)?s.asset_ids.filter(id=>id!==a.id):[...s.asset_ids,a.id]})}/><span>{s.asset_ids.includes(a.id)&&`${s.asset_ids.indexOf(a.id)+1}. `}{a.filename}<small>{a.credit||a.rights}</small></span></label>)}</div><AssetUpload onError={onError} onUploaded={a=>{onAsset(a);if(a.media_type.startsWith('image/')&&s.asset_ids.length<20)patch({asset_ids:[...s.asset_ids,a.id]});}}/></>:<>
     <div className="field-pair"><label className="field">生成图片比例<select value={s.ratio} onChange={e=>patch({ratio:e.target.value as IllustrationSettings['ratio']})}><option value="landscape">横版 3:2</option><option value="square">方形 1:1</option><option value="portrait">竖版 2:3</option></select></label><label className="field">配图失败时<select value={s.failure} onChange={e=>patch({failure:e.target.value as IllustrationSettings['failure']})}><option value="skip">跳过缺图，继续创作</option><option value="pause">暂停，保留已完成内容</option>{s.mode!=='ai'&&<option value="ai">找不到相关图片时改用 AI</option>}</select></label></div>
     {(s.mode==='ai'||s.mode==='smart'||s.failure==='ai')&&<><label className="field">配图使用的图片模型<select value={s.model_id} onChange={e=>patch({model_id:e.target.value})}><option value="">请选择图片模型</option>{models.filter(m=>m.protocol==='images').map(m=><option key={m.id} value={m.id}>{m.name} · {m.ready?m.model:'待配置'}</option>)}</select></label><a className="text-button" href="#models">到“我的模型”添加图片模型 ↗</a><label className="field">配图风格<textarea rows={2} maxLength={600} value={s.style} onChange={e=>patch({style:e.target.value})} placeholder="例如：自然光、纪实感、暖色调，不添加文字"/></label></>}
-    {s.mode!=='ai'&&<><PictureSources value={s.web_sources?.length?s.web_sources:s.web_source==='web'?['bing']:['commons','openverse']} onChange={v=>{if(v.length)patch({web_sources:v});}}/><p className="inline-hint">至少选择一个来源，自动执行时合并所选网站的结果。开放图库提供授权信息，其他网络图片的使用条件以来源页面为准；找不到相关图片时按失败策略处理。</p></>}
+    {s.mode!=='ai'&&<><PictureSources value={selectedPictureSources(s)} sites={s.custom_sites||[]} onSitesChange={custom_sites=>patch({custom_sites,web_sources:selectedPictureSources(s)})} onChange={v=>{if(v.length||s.custom_sites?.length)patch({web_source:'web',web_sources:v});}}/><p className="inline-hint">至少选择一个来源，自动执行时合并所选网站的结果。开放图库提供授权信息，其他网络图片的使用条件以来源页面为准；找不到相关图片时按失败策略处理。</p></>}
     </>}
     <p className="picture-policy-note">每次生成正文后执行本配置。已有图片和锁定位置保留；关闭后，后续创作不再自动找图或生成图片。</p></div>}
   </section>;

@@ -3,6 +3,7 @@ from pydantic import Field, field_validator
 from .article_models import TextModel, ArticleProfile
 from .network import public_url
 from .picture_models import IllustrationSettings
+from .wechat_declarations import Declaration
 
 
 class MaterialSettings(TextModel):
@@ -42,6 +43,13 @@ class WeChatDelivery(TextModel):
     account_id: str = Field(default='',max_length=80)
     cover_asset_id: str = Field(default='',max_length=64)
     author: str = Field(default='',max_length=16)
+    content_declaration: Declaration = 'ai'
+
+
+class SendArticle(TextModel):
+    version: int = Field(ge=1)
+    delivery: WeChatDelivery
+    resume: bool = False
 
 
 class VideoSettings(TextModel):

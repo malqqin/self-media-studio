@@ -105,6 +105,8 @@ def test_content_files_secrets_and_foreign_keys_are_isolated(clients):
     second=other.post('/api/tasks',json={'name':'普通用户任务','kind':'article','request_id':'same-request-1234'})
     assert second.status_code==201
     assert other.get('/api/tasks/'+task['id']).status_code==404
+    run=owner.post('/api/tasks/'+task['id']+'/run',json={'version':task['version'],'action':'blank','request_id':'private-run-12345'}).json()
+    assert other.post('/api/task-runs/'+run['id']+'/publication',json={'version':1,'delivery':{'mode':'draft','account_id':'private-account'}}).status_code==404
     assert other.request('DELETE','/api/tasks/'+task['id'],json={'version':1}).status_code==404
     assert len(other.get('/api/tasks').json())==1
     response=owner.put('/api/model-config',json={'name':'私密模型','base_url':'https://example.com/v1','model':'private-model','protocol':'responses','output_mode':'json_schema','api_key':'owner-only-secret'})

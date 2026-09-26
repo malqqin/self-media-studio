@@ -508,6 +508,18 @@ test('success and error notices expire after three seconds with countdown and ex
 });
 
 
+test('creation declaration is configurable and persists independently of delivery mode',async({page},info)=>{
+  const state=await mockPlatform(page),task=makeTask('article','task-declaration');state.tasks.push(task);
+  await page.goto('/#task/task-declaration');await openConfig(page,'作品交付');
+  const input=page.getByRole('combobox',{name:'公众号创作来源',exact:true});
+  await expect(input).toHaveValue('ai');await expect(input.locator('option')).toHaveCount(7);
+  await input.selectOption('finance');await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await expect.poll(()=>task.settings.wechat_delivery?.content_declaration).toBe('finance');
+  await page.reload();await openConfig(page,'作品交付');await expect(input).toHaveValue('finance');
+  await page.getByRole('dialog').screenshot({path:info.outputPath('wechat-declaration-config.png')});
+});
+
+
 test('optional illustration settings persist and keep image models separate from writing',async({page},testInfo)=>{
   const state=await mockPlatform(page),task=makeTask('article','task-pictures');state.tasks.push(task);
   await page.route('**/api/picture-sources/unsplash',route=>route.fulfill({json:{key_configured:false}}));
@@ -526,10 +538,12 @@ test('optional illustration settings persist and keep image models separate from
   expect(task.settings.illustration).toMatchObject({enabled:true,mode:'ai',model_id:'image-model',ratio:'portrait',cover:false,failure:'pause'});
   await page.reload();await openConfig(page,'文章配图');await expect(page.getByLabel('配图风格')).toHaveValue('水彩插画，简洁留白');
   await page.getByRole('button',{name:'联网找图 按主体匹配相关实景图'}).click();
-  await expect(page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true})).toBeChecked();
-  await page.getByRole('checkbox',{name:'360 图片',exact:true}).check();await page.getByRole('checkbox',{name:'Unsplash',exact:true}).check();await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
-  await expect.poll(()=>task.settings.illustration?.web_sources).toEqual(['commons','openverse','360','unsplash']);
-  await page.reload();await openConfig(page,'文章配图');await expect(page.getByRole('checkbox',{name:'360 图片',exact:true})).toBeChecked();await expect(page.getByRole('checkbox',{name:'Unsplash',exact:true})).toBeChecked();
+  for(const name of ['360 图片','搜狗图片','必应图片'])await expect(page.getByRole('checkbox',{name,exact:true})).toBeChecked();
+  for(const name of ['百度图片','Unsplash','Wikimedia Commons','Openverse'])await expect(page.getByRole('checkbox',{name,exact:true})).toHaveCount(0);
+  await page.getByRole('textbox',{name:'自定义图片网站'}).fill('example.com/travel');await page.getByRole('button',{name:'添加网站',exact:true}).click();
+  await finishConfig(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+  await expect.poll(()=>task.settings.illustration?.custom_sites).toEqual(['https://example.com/travel']);
+  await page.reload();await openConfig(page,'文章配图');await expect(page.getByRole('checkbox',{name:'360 图片',exact:true})).toBeChecked();await expect(page.locator('.picture-custom-site')).toContainText('https://example.com/travel');
   await config.scrollIntoViewIfNeeded();await config.screenshot({path:testInfo.outputPath('illustration-config-desktop.png')});
   await page.setViewportSize({width:390,height:844});
   await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);

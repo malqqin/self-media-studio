@@ -10,6 +10,7 @@ from backend.article_models import Angles, Angle, ArticleProfile, ArticleOutline
 
 SOURCE_TEXT = '公开报告显示，团队在试验环境中比较了两种工作方法。作者强调结果只适用于当前任务，不代表所有人的效率都会提高。'
 REAL_DOCUMENT_WRITER = article_ai.document
+REAL_ARTICLE_CHECK = article_ai.check
 
 
 @pytest.fixture
@@ -265,6 +266,11 @@ def test_safe_export_includes_images_and_sources(client):
     assert '<script>' not in html and '&lt;script&gt;' in html and 'style=' in html
     md=client.get(path+'/export?format=markdown').text
     assert '<script>' not in md
+    wechat_html=client.get(path+'/export?wechat=true').text
+    assert '<h1' not in wechat_html and '&lt;script&gt;' not in wechat_html
+    wechat_md=client.get(path+'/export?format=markdown&wechat=true').text
+    assert not wechat_md.startswith('# ') and '&lt;script&gt;' not in wechat_md
+    assert doc['opening'] in wechat_html and doc['opening'] in wechat_md
     assert client.get(path+'/export?format=exe').status_code==400
     bundle=client.get(path+'/export?format=bundle')
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
@@ -323,16 +329,26 @@ def test_wechat_layout_keeps_all_text_images_and_colors_without_inline_heading_b
     from backend import article_export,article_templates
     from bs4 import BeautifulSoup
     doc=finished_travel_document().model_dump()
+    doc['cover_asset_id']='cover'
     doc['sections'][0].update(asset_id='inline',caption='正文配图')
     for ident in article_templates.TEMPLATES:
         doc['template_id']=ident
-        original=BeautifulSoup(article_export.html_body(doc,{'inline':'https://mmbiz.qpic.cn/example.jpg'}),'html.parser')
-        rendered=BeautifulSoup(article_export.html_body(doc,{'inline':'https://mmbiz.qpic.cn/example.jpg'},wechat=True),'html.parser')
+        paths={'inline':'https://mmbiz.qpic.cn/example.jpg','cover':'https://mmbiz.qpic.cn/cover.jpg'}
+        ornament=article_templates.decoration_id(doc)
+        if ornament:paths[ornament]='https://mmbiz.qpic.cn/decoration.jpg'
+        original=BeautifulSoup(article_export.html_body(doc,paths),'html.parser')
+        rendered=BeautifulSoup(article_export.html_body(doc,paths,wechat=True),'html.parser')
         assert not rendered.select('h2 span'), 'WeChat blocks inline heading badges during paste'
         assert rendered.h2['style']==original.h2['style']
-        assert rendered.select_one('figure img')['src']==original.select_one('figure img')['src']
+        assert rendered.select_one('figure img')['src']==paths['inline']
+        assert len(rendered.select('figure img'))==1
+        assert paths['cover'] not in str(rendered)
         assert not rendered.select('img[src^="data:"]')
-        assert rendered.h1.get_text()==doc['title']
+        assert not rendered.h1 and doc['title'] not in rendered.get_text()
+        assert rendered.section.contents[0].name=='p'
+        assert rendered.section.contents[0].get_text()==doc['summary']
+        assert rendered.section.contents[1].get_text()==doc['opening']
+        assert str(rendered).index(doc['opening'])<str(rendered).index('<img')
         assert doc['opening'] in rendered.get_text() and doc['closing'] in rendered.get_text()
         for section in doc['sections']:
             assert section['heading'] in rendered.get_text()
@@ -340,6 +356,42 @@ def test_wechat_layout_keeps_all_text_images_and_colors_without_inline_heading_b
         if article_templates.get_template(ident)['numbered']:
             assert rendered.h2.get_text().startswith('01 · ')
             assert original.select('h2 span'), 'Local template exports retain their badges'
+
+
+def test_wechat_cover_is_separate_and_explicit_section_reuse_is_kept():
+    from backend import article_export
+    from bs4 import BeautifulSoup
+    doc=finished_travel_document().model_dump();doc['cover_asset_id']='cover'
+    paths={'cover':'https://mmbiz.qpic.cn/cover.jpg'}
+    assert article_export.body_image_ids(doc)==['cover']
+    assert article_export.body_image_ids(doc,wechat=True)==[]
+    assert not BeautifulSoup(article_export.html_body(doc,paths,wechat=True),'html.parser').select('img')
+    assert doc['title'] not in article_export.markdown(doc,paths,wechat=True)
+    assert paths['cover'] not in article_export.markdown(doc,paths,wechat=True)
+    doc['sections'][0]['asset_id']='cover'
+    assert article_export.body_image_ids(doc,wechat=True)==['cover']
+    soup=BeautifulSoup(article_export.html_body(doc,paths,wechat=True),'html.parser')
+    assert len(soup.select('img'))==1
+    assert soup.img.find_previous('p').get_text()==doc['sections'][0]['paragraphs'][-1]
+
+
+@pytest.mark.parametrize('caption,expected',[
+    ('授权待核对',''),('摄影：小王 · 授权待核对','摄影：小王'),
+    ('摄影：小王 · CC BY-SA 4.0','摄影：小王 · CC BY-SA 4.0'),
+    ('AI 生成示意图','AI 生成示意图'),('这幅画的授权待核对流程','这幅画的授权待核对流程'),
+])
+def test_exports_hide_legacy_internal_caption_status_without_losing_attribution(caption,expected):
+    from backend import article_export
+    from bs4 import BeautifulSoup
+    doc=finished_travel_document().model_dump()
+    doc['sections'][0].update(asset_id='inline',caption=caption)
+    paths={'inline':'https://mmbiz.qpic.cn/example.jpg'}
+    for wechat in (False,True):
+        soup=BeautifulSoup(article_export.html_body(doc,paths,wechat=wechat),'html.parser')
+        assert soup.img['alt']==expected
+        assert (soup.figcaption.get_text() if soup.figcaption else '')==expected
+        assert f'![{expected}]' in article_export.markdown(doc,paths,wechat=wechat)
+    assert doc['sections'][0]['caption']==caption, 'Rendering must not mutate saved article versions'
 
 
 def test_new_templates_save_restore_and_export_portable_decorations(client):
@@ -432,6 +484,45 @@ def test_truncated_article_retains_outline_and_explains_limit(client,monkeypatch
     assert budgets==[16000]
     assert failed['status']=='failed' and failed['outline']==article['outline']
     assert failed['document'] is None and '输出达到上限' in failed['error']
+
+
+@pytest.mark.parametrize('protocol',['responses','chat_completions'])
+def test_check_has_reasoning_room_and_retry_preserves_body(client,monkeypatch,protocol):
+    import httpx
+    from backend import ai_stream
+    article=draft(client);original=article['document'];calls=[];truncated=True
+    connection={'name':'test','base_url':'https://example.com/v1','model':'test-model','protocol':protocol,'output_mode':'json_object','api_key':'test-not-real'}
+    assert client.put('/api/model-config',json=connection).status_code==200
+    def respond(request):
+        calls.append(json.loads(request.content))
+        answer=json.dumps({'issues':[],'note':'核对完成。'},ensure_ascii=False)
+        if protocol=='chat_completions':
+            result={'choices':[{'finish_reason':'length' if truncated else 'stop','message':{'content':'' if truncated else answer}}],
+                    'usage':{'prompt_tokens':1866,'completion_tokens':100000 if truncated else 4800,'completion_tokens_details':{'reasoning_tokens':4700}}}
+        else:
+            result={'status':'incomplete' if truncated else 'completed','incomplete_details':{'reason':'max_output_tokens'} if truncated else None,
+                    'output':[] if truncated else [{'type':'message','content':[{'type':'output_text','text':answer}]}],
+                    'usage':{'input_tokens':1866,'output_tokens':100000 if truncated else 4800,'output_tokens_details':{'reasoning_tokens':4700}}}
+        return httpx.Response(200,json=result)
+    transport=httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(ai_stream.httpx,'stream',transport.stream)
+    monkeypatch.setattr(article_ai,'check',REAL_ARTICLE_CHECK)
+    failed=advance(client,article,'check')
+    assert len(calls)==1, 'Do not silently repeat a billed model call'
+    assert failed['status']=='failed' and failed['stage']=='check'
+    assert failed['document']==original
+    assert '文章核对' in failed['error'] and '100,000' in failed['error'] and '思考' in failed['error']
+    assert '未作为完整正文保存' not in failed['error'] and '减少目标字数' not in failed['error']
+    truncated=False
+    retried=advance(client,failed,'retry')
+    assert len(calls)==2 and all((c.get('max_tokens') or c.get('max_output_tokens'))==100000 for c in calls)
+    assert retried['status']=='needs_review' and retried['document']==original
+    assert retried['checks']['note']=='核对完成。'
+    with db.connect() as c:
+        usage=c.execute("SELECT status,output_tokens FROM ai_usage WHERE job_id=%s AND kind='article_check' ORDER BY id",(article['id'],)).fetchall()
+        assert [tuple(r.values()) for r in usage]==[('output_limit',100000),('received',4800)]
+    transport.close()
+
 
 def test_reselect_angle_requires_confirmation_and_retains_restorable_body(client):
     article=draft(client);path='/api/articles/'+article['id']

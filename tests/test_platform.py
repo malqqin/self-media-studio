@@ -31,7 +31,7 @@ def wechat(client,monkeypatch):
     assert client.post('/api/wechat/accounts/'+account['id']+'/test').status_code==200
     image=io.BytesIO();Image.new('RGB',(500,300),'green').save(image,'JPEG')
     asset=media.store_asset(image.getvalue(),'cover.jpg','本人绘制封面')
-    prefs={'mode':'publish','account_id':account['id'],'cover_asset_id':asset['id'],'author':'旅行编辑'}
+    prefs={'mode':'publish','account_id':account['id'],'cover_asset_id':asset['id'],'author':'旅行编辑','content_declaration':'none'}
     calls.clear()
     return prefs,calls,request
 
@@ -978,23 +978,32 @@ def test_wechat_denied_permission_prevents_enabling_publish(client,wechat,monkey
     assert client.put('/api/tasks/'+task['id'],json={k:task[k] for k in ('name','version','settings')}).status_code==200
 
 
-def test_wechat_uploads_inline_images_before_draft_and_preserves_snapshot(client,wechat,monkeypatch):
+@pytest.mark.parametrize('reuse_cover_in_section',[False,True])
+def test_wechat_uploads_inline_images_before_draft_and_preserves_snapshot(client,wechat,monkeypatch,reuse_cover_in_section):
+    from bs4 import BeautifulSoup
     prefs,calls,_=wechat
     monkeypatch.setattr(article_ai,'check',lambda *a,**kw:ArticleCheck(issues=[{'severity':'error','section':0,'message':'待编辑'}],note='待检查'))
     task=save(client,create(client),brief='旅行文化',wechat_delivery=prefs)
     run=execute(client,task,'automatic')
     article=article_worker.get(run['content_id']);doc=article['document']
-    doc['cover_asset_id']=prefs['cover_asset_id'];doc['sections'][0]['asset_id']=prefs['cover_asset_id']
+    doc['cover_asset_id']=prefs['cover_asset_id']
+    doc['sections'][0].update(asset_id=prefs['cover_asset_id'] if reuse_cover_in_section else '',caption='摄影作者 · 授权待核对')
     article=article_worker.edit(article['id'],article['version'],document_value=ArticleDocument.model_validate(doc))
     monkeypatch.setattr(article_ai,'check',lambda *a,**kw:ArticleCheck(issues=[],note='检查完成'))
     article_worker.enqueue(article['id'],article['version'],'check',submit=False);article_worker.run(article['id'])
     client.post('/api/task-runs/'+run['id']+'/retry');task_engine.run(run['id'])
     run=task_store.detail(task['id'])['runs'][0]
     assert run['status']=='publishing',run
-    assert [p for p,_ in calls]==['material/add_material','media/uploadimg','draft/add','freepublish/submit']
+    assert [p for p,_ in calls]==['material/add_material',*(['media/uploadimg'] if reuse_cover_in_section else []),'draft/add','freepublish/submit']
     payload=next(v['payload'] for p,v in calls if p=='draft/add')
-    assert 'https://mmbiz.qpic.cn/image.jpg' in payload['articles'][0]['content']
-    assert '/api/assets/' not in payload['articles'][0]['content']
+    content=payload['articles'][0]['content'];soup=BeautifulSoup(content,'html.parser')
+    assert ('https://mmbiz.qpic.cn/image.jpg' in content)==reuse_cover_in_section
+    assert '/api/assets/' not in content and '授权待核对' not in content
+    assert payload['articles'][0]['title']==doc['title'] and not soup.h1
+    assert soup.section.contents[0].get_text()==doc['summary']
+    assert len(soup.select('img'))==int(reuse_cover_in_section)
+    if reuse_cover_in_section:assert soup.figcaption.get_text()=='摄影作者'
+    assert article_worker.get(article['id'])['document']['sections'][0]['caption']=='摄影作者 · 授权待核对'
 
 
 def test_wechat_uploads_template_decoration_without_replacing_cover(client,wechat):
@@ -1010,6 +1019,39 @@ def test_wechat_uploads_template_decoration_without_replacing_cover(client,wecha
     assert soup.select_one('img[data-template-decoration]')['src']=='https://mmbiz.qpic.cn/image.jpg'
     assert payload['articles'][0]['thumb_media_id']=='cover-media'
     assert soup.select_one('[data-article-template]')['data-article-template']=='sage'
+
+
+def test_api_declaration_is_retained_for_drafts_and_cannot_be_silently_ignored_on_publish(client,wechat):
+    from backend import wechat_delivery
+    prefs,calls,_=wechat
+    task=create(client)
+    invalid={**task['settings'],'execution':'automatic','brief':'旅行文化','wechat_delivery':{**prefs,'content_declaration':'opinion'}}
+    result=client.put('/api/tasks/'+task['id'],json={'name':task['name'],'version':task['version'],'settings':invalid})
+    assert result.status_code==400 and '创作来源' in result.text and calls==[]
+    task=save(client,task,brief='旅行文化',wechat_delivery={**prefs,'mode':'draft','content_declaration':'opinion'})
+    run=execute(client,task,'automatic')
+    value=wechat_delivery.public(wechat_delivery.get(run['id']))
+    assert value['status']=='draft' and value['content_declaration']=='opinion' and not value['declaration_applied']
+    assert all(path!='freepublish/submit' for path,_ in calls)
+
+
+@pytest.mark.parametrize('declaration',['news','fiction','opinion','health','finance','none'])
+def test_browser_delivery_receives_frozen_user_declaration(client,wechat,monkeypatch,declaration):
+    from backend import wechat_delivery,wechat_browser_delivery
+    account=personal_account(client)
+    # Reuse the established browser-account fixture setup.
+    from backend import wechat_accounts
+    original=wechat_accounts.require_ready
+    monkeypatch.setattr(wechat_accounts,'require_ready',lambda ident,mode:{**original(ident,'handoff'),'channel':'browser','appid':'wx-browser'} if ident==account['id'] else original(ident,mode))
+    prefs,_,_=wechat
+    task=save(client,create(client),brief='文章测试',wechat_delivery={**prefs,'account_id':account['id'],'mode':'draft','content_declaration':declaration})
+    received=[]
+    def deliver(value):
+        received.append(value['data']['content_declaration']);value['data']['declaration_applied']=True
+        wechat_delivery.update(value['run_id'],'draft',value['data'])
+    monkeypatch.setattr(wechat_browser_delivery,'deliver',deliver)
+    run=execute(client,task,'automatic')
+    assert received==[declaration] and run['publication']['content_declaration']==declaration
 
 
 @pytest.mark.parametrize('phase',['drafting','submitting'])
@@ -1076,7 +1118,8 @@ def test_personal_automatic_handoff_freezes_content_and_never_calls_wechat(clien
     assert not run['publication']['article_url'] and not run['publication']['can_retry']
     content_path='/api/task-runs/'+run['id']+'/publication'
     original=client.get(content_path+'/content').json()
-    assert '从小任务开始' in original['html'] and '描述实际任务' in original['text']
+    assert original['title']=='从小任务开始' and '<h1' not in original['html']
+    assert not original['text'].startswith('# ') and '描述实际任务' in original['text']
     article=article_worker.get(run['content_id'])
     with db.connect() as c:
         edited={**article['document'],'title':'之后的本地修改'}
@@ -1278,3 +1321,95 @@ def test_record_counts_include_scheduled_and_archived_but_exclude_deleted_tasks(
     assert client.request('DELETE','/api/tasks/'+manual['id'],json={'version':manual['version']}).status_code==200
     records=client.get('/api/task-records').json()
     assert len(records)==2 and not any(r['id']==first['id'] for r in records)
+
+
+@pytest.mark.parametrize('action',['blank','automatic'])
+def test_explicit_delivery_uses_saved_article_without_model_or_regeneration(client,wechat,monkeypatch,action):
+    from backend import wechat_delivery
+    prefs,calls,_=wechat
+    task=save(client,create(client),brief='古城旅行')
+    run=execute(client,task,action)
+    article=article_worker.get(run['content_id']);original=article['document']
+    # A failed review does not prevent saving the existing body to a draft.
+    with db.connect() as c:
+        c.execute("UPDATE articles SET status='failed',stage='check',error='review failed' WHERE id=%s",(article['id'],))
+        c.execute("UPDATE task_runs SET status='failed' WHERE id=%s",(run['id'],))
+    def forbidden(*args,**kwargs):raise AssertionError('Delivery must not generate, review, collect or validate a model')
+    monkeypatch.setattr(task_engine,'drive_article',forbidden)
+    monkeypatch.setattr(task_sources,'collect',forbidden)
+    monkeypatch.setattr(model_library,'ready',forbidden)
+    body={'version':article['version'],'delivery':{**prefs,'mode':'draft'}}
+    path='/api/task-runs/'+run['id']+'/publication'
+    assert client.post(path,json={**body,'version':article['version']+1}).status_code==409
+    before=len(calls)
+    first=client.post(path,json=body)
+    assert first.status_code==200,first.text
+    assert first.json()['status']=='queued' and len(calls)==before
+    assert client.post(path,json=body).status_code==200
+    assert client.put('/api/articles/'+article['id']+'/document',json={'version':article['version'],'document':original}).status_code==409
+    task_engine.run(run['id'])
+    delivered=wechat_delivery.get(run['id'])
+    assert delivered['status']=='draft'
+    assert delivered['data']['document']==original and article_worker.get(article['id'])['document']==original
+    assert len([p for p,_ in calls if p=='draft/add'])==1
+    assert client.post(path,json=body).json()['status']=='draft'
+    assert client.post(path,json={**body,'delivery':{**body['delivery'],'content_declaration':'opinion'}}).status_code==409
+    task_engine.run(run['id'])
+    assert len([p for p,_ in calls if p=='draft/add'])==1
+
+
+def test_explicit_delivery_validates_missing_cover_and_publish_checks(client,wechat):
+    prefs,_,_=wechat
+    run=execute(client,save(client,create(client),brief='古城旅行'),'blank')
+    article=article_worker.get(run['content_id']);path='/api/task-runs/'+run['id']+'/publication'
+    assert client.post(path,json={'version':article['version'],'delivery':{**prefs,'mode':'draft','cover_asset_id':''}}).status_code==400
+    assert client.post(path,json={'version':article['version'],'delivery':{**prefs,'mode':'publish'}}).status_code==400
+    assert client.post('/api/task-runs/missing/publication',json={'version':1,'delivery':prefs}).status_code==404
+    with db.connect() as c:assert not c.execute('SELECT 1 FROM wechat_deliveries WHERE run_id=%s',(run['id'],)).fetchone()
+
+
+def test_explicit_publish_uses_checked_saved_document_and_waits_for_wechat(client,wechat,monkeypatch):
+    prefs,calls,_=wechat
+    run=execute(client,save(client,create(client),brief='古城旅行'),'automatic')
+    article=article_worker.get(run['content_id'])
+    monkeypatch.setattr(task_engine,'drive_article',lambda *a:pytest.fail('Unexpected article generation'))
+    result=client.post('/api/task-runs/'+run['id']+'/publication',json={'version':article['version'],'delivery':prefs})
+    assert result.status_code==200,result.text
+    task_engine.run(run['id'])
+    current=task_store.detail(run['task_id'])['runs'][0]
+    assert current['publication']['status']=='publishing'
+    assert len([p for p,_ in calls if p=='freepublish/submit'])==1
+    assert article_worker.get(article['id'])['document']==article['document']
+
+
+def test_explicit_resume_reuses_known_browser_draft_and_rejects_unknown_outcome(client,wechat,monkeypatch):
+    from backend import wechat_delivery,wechat_browser_delivery as adapter
+    prefs,_,_=wechat;account=connected_personal(client)
+    prefs={**prefs,'mode':'draft','account_id':account['id'],'author':''}
+    def fail(value):
+        data=value['data'];data.update(browser_draft_id='123',browser_editor=adapter.seal('https://mp.weixin.qq.com/cgi-bin/appmsg?appmsgid=123'))
+        wechat_delivery.update(value['run_id'],'drafting',data)
+        raise ValueError('interrupted')
+    monkeypatch.setattr(adapter,'deliver',fail)
+    run=execute(client,save(client,create(client),brief='古城旅行',wechat_delivery=prefs),'automatic')
+    article=article_worker.get(run['content_id']);path='/api/task-runs/'+run['id']+'/publication'
+    assert run['publication']['can_resume']
+    body={'version':article['version'],'delivery':prefs,'resume':True}
+    assert client.post(path,json={**body,'resume':False}).status_code==409
+    assert client.post(path,json={**body,'delivery':{**prefs,'account_id':'other'}}).status_code==409
+    with db.connect() as c:
+        d=wechat_delivery.get(run['id'],c);data=d['data'];data.pop('browser_draft_id')
+        c.execute('UPDATE wechat_deliveries SET data=%s WHERE run_id=%s',(db.dump(data),run['id']))
+    assert client.post(path,json=body).status_code==409
+    with db.connect() as c:
+        data['browser_draft_id']='123';c.execute('UPDATE wechat_deliveries SET data=%s WHERE run_id=%s',(db.dump(data),run['id']))
+    seen=[]
+    def resume(value):
+        seen.append(value['data']['browser_draft_id'])
+        assert value['data']['document']==article['document']
+        value['data']['media_id']='123';value['data'].pop('_resume_browser')
+        wechat_delivery.update(value['run_id'],'draft',value['data'])
+    monkeypatch.setattr(adapter,'resume',resume)
+    assert client.post(path,json=body).status_code==200
+    task_engine.run(run['id'])
+    assert seen==['123'] and wechat_delivery.get(run['id'])['status']=='draft'

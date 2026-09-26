@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, Response
 from . import db, config, model_library, task_store, task_engine, task_sources, image_studio, pictures
 from .models import ModelConnection
 from .task_models import CreateTask, EditTask, ExecuteTask, TaskSettings, EditImage
+from .task_models import SendArticle
 from .picture_models import PictureSearch, PictureRequest, PictureSource
 from . import unsplash
 from .article_models import ArticleVersion
@@ -15,9 +16,9 @@ router=APIRouter(prefix='/api')
 
 
 @router.get('/pictures/search')
-def picture_search(query: str,source: Literal['web','licensed']='web',details: bool=False,sources: list[PictureSource]|None=Query(default=None,max_length=6),page: int=Query(default=1,ge=1,le=50)):
-    request=PictureSearch(query=query,source=source)
-    return pictures.search_report(request.query,request.source,sources,page) if details else pictures.search(request.query,request.source,sources,page)
+def picture_search(query: str,source: Literal['web','licensed']='web',details: bool=False,sources: list[PictureSource]|None=Query(default=None,max_length=3),page: int=Query(default=1,ge=1,le=50),custom_sites: list[str]|None=Query(default=None,max_length=5)):
+    request=PictureSearch(query=query,source=source,custom_sites=custom_sites or [])
+    return pictures.search_report(request.query,request.source,sources,page,request.custom_sites) if details else pictures.search(request.query,request.source,sources,page,request.custom_sites)
 
 
 @router.get('/picture-sources/unsplash')
@@ -94,6 +95,12 @@ def forget_wechat_login(ident:str):return wechat_browser.cancel(ident,forget=Tru
 
 @router.post('/task-runs/{ident}/publication/refresh')
 def refresh_publication(ident:str):return wechat_delivery.refresh(ident)
+
+
+@router.post('/task-runs/{ident}/publication')
+def send_article(ident:str,body:SendArticle):
+    from . import article_delivery
+    return article_delivery.queue(ident,body)
 
 
 @router.get('/task-runs/{ident}/publication/content')

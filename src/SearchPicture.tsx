@@ -2,10 +2,10 @@ import {useEffect,useRef,useState} from 'react';
 import {LoaderCircle,RefreshCw} from 'lucide-react';
 import type {PictureCandidate} from './types';
 
-export default function SearchPicture({picture}:{picture:PictureCandidate}){
+export default function SearchPicture({picture,fullSize=false}:{picture:PictureCandidate;fullSize?:boolean}){
   const holder=useRef<HTMLDivElement>(null);
   const [visible,setVisible]=useState(false),[attempt,setAttempt]=useState(0),[loaded,setLoaded]=useState(false),[retry,setRetry]=useState(0);
-  const urls=[...new Set([picture.preview_url,picture.url,picture.provider==='Unsplash'?null:`/api/pictures/candidates/${encodeURIComponent(picture.id)}/preview`].filter((v):v is string=>!!v))];
+  const urls=[...new Set([...(fullSize?[picture.url,picture.preview_url]:[picture.preview_url,picture.url]),picture.provider==='Unsplash'?null:`/api/pictures/candidates/${encodeURIComponent(picture.id)}/preview`].filter((v):v is string=>!!v))];
   const src=urls[attempt],failed=attempt>=urls.length;
   useEffect(()=>{
     const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){setVisible(true);observer.disconnect();}},{rootMargin:'200px'});

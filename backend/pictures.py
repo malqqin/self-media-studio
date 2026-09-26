@@ -7,14 +7,14 @@ import json
 import re
 import uuid
 import threading
-from urllib.parse import urlencode,urlsplit
+from urllib.parse import urlencode,urlsplit,unquote
 import httpx
 from bs4 import BeautifulSoup
-from PIL import Image
+from PIL import Image, ImageFilter, ImageEnhance
 from fastapi import HTTPException
 from . import db,media,model_library,unsplash,model_http
 from .network import fetch_public, public_url
-from .picture_models import PictureRequest
+from .picture_models import PictureRequest, DEFAULT_PICTURE_SOURCES, normalize_picture_site
 
 executor=ThreadPoolExecutor(max_workers=2,thread_name_prefix='studio-pictures')
 search_executor=ThreadPoolExecutor(max_workers=4,thread_name_prefix='studio-picture-search')
@@ -133,8 +133,8 @@ def search_openverse(query,page=1):
 
 
 def search_bing(query,page=1):
-    params={'q':query,'count':24,'first':(page-1)*24+1,'adlt':'strict'}
-    content,_=fetch_public('https://www.bing.com/images/search?'+urlencode(params),timeout=6)
+    params={'q':query,'count':24,'first':(page-1)*24+1,'adlt':'strict','mkt':'zh-CN'}
+    content,_=fetch_public('https://cn.bing.com/images/search?'+urlencode(params),timeout=6)
     soup=BeautifulSoup(content,'html.parser');results=[]
     for node in soup.select('a.iusc[m]'):
         try:item=json.loads(node['m'])
@@ -176,6 +176,35 @@ def search_baidu(query,page=1):
     return SearchResults(results,page*24<data['displayNum'] if isinstance(data.get('displayNum'),int) else len(results)>=24)
 
 
+def search_sogou(query,page=1):
+    # Public search pages include JSON state with the actual results. Parse it
+    # as data only; never execute page scripts or use the protected AJAX API.
+    params={'query':query,'start':(page-1)*24,'xml_len':24,'ie':'utf8'}
+    content,_=fetch_public('https://pic.sogou.com/pics?'+urlencode(params),timeout=6)
+    soup=BeautifulSoup(content,'html.parser');state=None
+    for node in soup.select('script:not([src])'):
+        match=re.search(r'window\.__INITIAL_STATE__\s*=\s*',node.get_text())
+        if match:
+            try:state=json.JSONDecoder().raw_decode(node.get_text()[match.end():])[0]
+            except ValueError:raise ValueError('搜狗图片页面结构已变化，暂时无法读取图片。') from None
+            break
+    data=state.get('searchList') if isinstance(state,dict) else None
+    if not isinstance(data,dict) or not isinstance(data.get('searchList'),list):
+        raise ValueError('搜狗图片未返回可读取的结果，可能需要验证，请换一个来源。')
+    if str(data.get('query','')).strip().casefold()!=query.strip().casefold():
+        raise ValueError('搜狗返回的搜索主题不一致，已停止使用这些图片，请换一个来源。')
+    results=[]
+    for item in data['searchList']:
+        if not isinstance(item,dict):continue
+        results.append({'title':clean(item.get('title'))[:300],
+            'url':item.get('oriPicUrl') or item.get('picUrl',''),'preview_url':item.get('thumbUrl',''),
+            'page_url':item.get('url',''),'description':clean(item.get('content_major'))[:1000],
+            'width':item.get('width'),'height':item.get('height'),'provider':'搜狗图片',
+            'credit':'','license':'授权待核对','license_url':'','license_verified':False})
+    total=data.get('totalNum')
+    return SearchResults(results,bool(results) and (page*24<total if isinstance(total,int) else len(results)>=24))
+
+
 def relevant(query,item):
     """Reject unrelated fallback/trending results using available title and description."""
     text=(item.get('title','')+' '+item.get('description','')).casefold()
@@ -187,10 +216,32 @@ def relevant(query,item):
     return any((token in text if token.isascii() else any(token[i:i+2] in text for i in range(max(1,len(token)-1)))) for token in tokens)
 
 
-def search_report(query,source='web',sources=None,page=1):
+def in_picture_site(page_url,site):
+    try:
+        target=urlsplit(site);page=urlsplit(public_url(page_url))
+        root=target.hostname.lower();host=page.hostname.lower()
+        prefix=unquote(target.path).rstrip('/');path=unquote(page.path)
+        return (host==root or host.endswith('.'+root)) and (not prefix or path==prefix or path.startswith(prefix+'/'))
+    except (ValueError,TypeError):return False
+
+
+def search_site(query,site,page=1):
+    site=normalize_picture_site(site);parts=urlsplit(site)
+    results=search_sogou(query+' site:'+parts.hostname+parts.path,page)
+    # Engines sometimes return recommendations outside the requested website.
+    # Enforce scope on the source article URL, not its image CDN hostname.
+    return SearchResults([r for r in results if in_picture_site(r.get('page_url',''),site)],results.has_more)
+
+
+def search_report(query,source='web',sources=None,page=1,custom_sites=None):
     """Keep provider failures distinct from zero matches; never relabel web results as licensed."""
     if source not in ('web','licensed'):raise ValueError('不支持的图片来源。')
+    # Legacy callers may still send the retired licensed-only mode. Never
+    # describe general-web results as licensed library results.
+    source='web'
     if not 1<=page<=50:raise ValueError('图片搜索页码应在 1 到 50 之间。')
+    sites=list(dict.fromkeys(normalize_picture_site(s) for s in (custom_sites or [])))
+    if len(sites)>5:raise ValueError('最多添加 5 个自定义图片网站。')
     providers=[];results=[];seen=set()
 
     def collect(name,fetch):
@@ -210,34 +261,39 @@ def search_report(query,source='web',sources=None,page=1):
             if name=='Unsplash' and not accepted:note+='；推荐使用准确的英文主体名称搜索，例如 mountain、city。'
             providers.append({'name':name,'status':'success' if accepted else 'empty','count':len(accepted),'excluded':excluded,
                               'message':note.lstrip('；'),'has_more':page<50 and getattr(candidates,'has_more',bool(candidates))})
+        except json.JSONDecodeError:
+            providers.append({'name':name,'status':'error','count':0,'message':'来源未返回有效图片数据，可能需要网页验证，请换一个来源。'})
+        except httpx.TimeoutException:
+            message='连接超时。' + ('海外图库在当前服务器网络下可能无法访问，可切换国内推荐来源。' if name in ('Wikimedia Commons','Openverse','Unsplash') else '请稍后重试，或使用其他国内推荐来源。')
+            providers.append({'name':name,'status':'error','count':0,'message':message})
+        except httpx.HTTPStatusError as error:
+            code=error.response.status_code
+            message='来源限制了自动访问，请换一个来源。' if code in (401,403,429) else '来源服务暂不可用，请稍后重试。'
+            providers.append({'name':name,'status':'error','count':0,'message':f'{message}（HTTP {code}）'})
         except ValueError as error:
             providers.append({'name':name,'status':'error','count':0,'message':str(error)[:180]})
         except Exception:
             providers.append({'name':name,'status':'error','count':0,'message':'连接超时、服务限制或暂不可用'})
 
-    registry={'bing':('必应图片',search_bing),'360':('360 图片',search_360),'baidu':('百度图片',search_baidu),
-              'unsplash':('Unsplash',unsplash.search),'commons':('Wikimedia Commons',search_commons),'openverse':('Openverse',search_openverse)}
+    registry={'bing':('必应图片',search_bing),'360':('360 图片',search_360),'sogou':('搜狗图片',search_sogou)}
     def submit(fetch):return search_executor.submit(fetch,query) if page==1 else search_executor.submit(fetch,query,page=page)
-    if sources:
-        if any(s not in registry for s in sources):raise ValueError('不支持的图片来源。')
-        requests=[(registry[s][0],submit(registry[s][1])) for s in dict.fromkeys(sources)]
-        for name,request in requests:collect(name,request)
-    elif source=='web':collect('必应图片',submit(search_bing))
-    if not sources and (source=='licensed' or not results):
-        requests=[(name,submit(fetch)) for name,fetch in [('Wikimedia Commons',search_commons),('Openverse',search_openverse)]]
-        for name,request in requests:collect(name,request)
+    selected=list(dict.fromkeys(sources or ([] if sites else DEFAULT_PICTURE_SOURCES)))
+    if any(s not in registry for s in selected):raise ValueError('不支持的图片来源。')
+    requests=[(registry[s][0],submit(registry[s][1])) for s in selected]
+    requests += [('自定义 · '+urlsplit(site).netloc+urlsplit(site).path,search_executor.submit(search_site,query,site,page)) for site in sites]
+    for name,request in requests:collect(name,request)
     with db.connect() as c:
         for item in results:
             item['id']='pic-'+uuid.uuid4().hex
             c.execute('INSERT INTO picture_candidates(id,data,at) VALUES (%s,%s,%s)',(item['id'],db.dump(item),db.now()))
-    return {'items':results,'providers':providers,'query':query,'source':source,'sources':sources or [],
+    return {'items':results,'providers':providers,'query':query,'source':source,'sources':selected,'custom_sites':sites,
             'page':page,'has_more':any(p.get('has_more',False) for p in providers)}
 
 
-def search(query,source='licensed',sources=None,page=1):
-    report=search_report(query,source,sources,page)
+def search(query,source='web',sources=None,page=1,custom_sites=None):
+    report=search_report(query,source,sources,page,custom_sites)
     if report['providers'] and all(p['status']=='error' for p in report['providers']):
-        raise ValueError('当前图片来源均无法连接。'+('可在配图配置中改用“必应图片”，或选择 AI 生成。' if source=='licensed' else '请稍后重试，或上传图片、使用 AI 生成。'))
+        raise ValueError('当前所选图片来源均不可用。'+'；'.join(p['name']+'：'+p['message'] for p in report['providers'])+' 可在配图配置中切换“国内推荐”，或上传图片、使用 AI 生成。')
     return report['items']
 
 
@@ -251,12 +307,17 @@ def image_connection(model_id,edit=False):
 
 
 def generate(body,job_id,connection=None):
-    connection=connection or image_connection(body.model_id,body.action=='edit')
+    editing=body.action in ('edit','remove_watermark')
+    connection=connection or image_connection(body.model_id,editing)
     sizes={'landscape':'1536x1024','square':'1024x1024','portrait':'1024x1536'}
-    payload={'model':connection['model'],'prompt':body.prompt,'size':sizes[body.ratio],'n':1}
+    prompt=body.prompt
+    if body.action=='remove_watermark':
+        prompt='去除图片中的叠加水印，并自然修复对应背景。保持主体、构图、颜色和其他内容不变，不删除场景内本身存在的文字，不添加新元素。'+('水印位置与补充要求：'+prompt if prompt else '')
+    payload={'model':connection['model'],'prompt':prompt,'size':sizes[body.ratio],'n':1}
     headers={'Authorization':'Bearer '+connection['api_key']}
     kwargs={'json':payload};suffix='/images/generations'
-    if body.action=='edit':
+    original=None
+    if editing:
         original=asset(body.asset_id);content=path(body.asset_id).read_bytes()
         kwargs={'data':{k:str(v) for k,v in payload.items()},'files':{'image':('image.jpg',content,original['media_type'])}};suffix='/images/edits'
     with db.connect() as c:
@@ -276,9 +337,10 @@ def generate(body,job_id,connection=None):
         if item.get('b64_json'):content=base64.b64decode(item['b64_json'],validate=True)
         elif item.get('url'):content=media.fetch_image(item['url'])
         else:raise ValueError('图片接口没有返回图片，请确认使用 Images 兼容接口。')
-        value=media.store_asset(content,'AI 配图.jpg','AI 生成图片；模型：'+connection['model']+'；请求：'+job_id,'AI 生成')
+        rights=(original['rights']+'；AI 编辑；' if original else 'AI 生成图片；')+'模型：'+connection['model']+'；请求：'+job_id
+        value=media.store_asset(content,'去水印.jpg' if body.action=='remove_watermark' else 'AI 配图.jpg',rights,original['credit'] if original else 'AI 生成',original['source_url'] if original else '')
         with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',('received',usage))
-        return record(value,{'kind':'ai','model':connection['model'],'prompt':body.prompt,'parent_asset_id':body.asset_id,'at':db.now()})
+        return record(value,{**(original['provenance'] if original else {}),'kind':'ai','model':connection['model'],'prompt':prompt,'operation':body.action,'parent_asset_id':body.asset_id,'at':db.now()})
     except ValueError:
         with db.connect() as c:c.execute('UPDATE ai_usage SET status=%s WHERE id=%s',('failed',usage))
         raise
@@ -288,7 +350,7 @@ def generate(body,job_id,connection=None):
 
 
 def produce(body,job_id):
-    if body.action in ('generate','edit'):return generate(body,job_id)
+    if body.action in ('generate','edit','remove_watermark'):return generate(body,job_id)
     if body.action=='import':
         with db.connect() as c:row=c.execute('SELECT data FROM picture_candidates WHERE id=%s',(body.candidate_id,)).fetchone()
         if not row:raise ValueError('搜索结果已不存在，请重新搜索。')
@@ -299,13 +361,24 @@ def produce(body,job_id):
         value=media.store_asset(content,source['title'],source['license']+'；'+source['license_url'],source['credit'],source['page_url'])
         return record(value,{'kind':'web',**source})
     original=asset(body.asset_id)
+    if body.action=='enhance':
+        with Image.open(path(body.asset_id)) as picture:
+            picture=picture.convert('RGB')
+            # Bound memory and match the asset store's maximum dimensions.
+            scale=min(body.scale,3840/max(picture.size))
+            if scale>1:picture=picture.resize(tuple(round(d*scale) for d in picture.size),Image.Resampling.LANCZOS)
+            picture=ImageEnhance.Contrast(picture).enhance(1+.03*body.strength)
+            picture=picture.filter(ImageFilter.UnsharpMask(radius=1.6,percent=round(100*body.strength),threshold=3))
+            output=io.BytesIO();picture.save(output,format='JPEG',quality=95)
+        value=media.store_asset(output.getvalue(),'清晰-'+original['filename'],original['rights'],original['credit'],original['source_url'])
+        return record(value,{**original['provenance'],'parent_asset_id':original['id'],'operation':'enhance','enhance':{'strength':body.strength,'scale':body.scale},'at':db.now()})
     with Image.open(path(body.asset_id)) as picture:
         w,h=picture.size
         box=(round(body.x*w),round(body.y*h),round((body.x+body.width)*w),round((body.y+body.height)*h))
         if box[2]-box[0]<100 or box[3]-box[1]<100:raise ValueError('裁剪后的图片至少需要 100 × 100 像素。')
         output=io.BytesIO();picture.crop(box).convert('RGB').save(output,format='JPEG',quality=93)
     value=media.store_asset(output.getvalue(),'裁剪-'+original['filename'],original['rights'],original['credit'],original['source_url'])
-    return record(value,{**original['provenance'],'parent_asset_id':original['id'],'crop':body.model_dump(include={'x','y','width','height'}),'at':db.now()})
+    return record(value,{**original['provenance'],'parent_asset_id':original['id'],'operation':'crop','crop':body.model_dump(include={'x','y','width','height'}),'at':db.now()})
 
 
 def get(ident):
@@ -319,10 +392,11 @@ def create(body,*,submit=True):
         db.lock(c,'picture-create',body.request_id)
         old=c.execute('SELECT * FROM picture_jobs WHERE request_id=%s',(body.request_id,)).fetchone()
         if old:
-            if json.loads(old['request'])!=body.model_dump():raise HTTPException(409,'此图片请求编号已用于其他操作。')
+            if PictureRequest.model_validate_json(old['request']).model_dump()!=body.model_dump():raise HTTPException(409,'此图片请求编号已用于其他操作。')
             ident=old['id']
         else:
-            if body.action in ('generate','edit'):image_connection(body.model_id,body.action=='edit')
+            if body.action in ('generate','edit','remove_watermark'):image_connection(body.model_id,body.action!='generate')
+            if body.action in ('edit','remove_watermark','enhance','crop'):asset(body.asset_id)
             ident='picture-'+uuid.uuid4().hex[:18]
             c.execute('INSERT INTO picture_jobs(id,request_id,request,status,asset_id,error,at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)',(ident,body.request_id,body.model_dump_json(),'queued',None,None,db.now(),db.now()))
     if submit:executor.submit(run,ident)

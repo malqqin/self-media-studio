@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from urllib.parse import urlsplit,parse_qs
 from . import wechat_browser, wechat_accounts, wechat_delivery, article_export, model_config
 from .article_templates import decoration_id
+from .wechat_declarations import label as declaration_label
 
 TITLE='.title-editor__input .ProseMirror'
 BODY='.view.rich_media_content .ProseMirror'
@@ -40,7 +41,10 @@ def dismiss_tips(page):
 def paste(page,body):
     dismiss_tips(page)
     page.bring_to_front()
-    editor=page.locator(BODY);editor.click();editor.press('Control+A');editor.press('Backspace')
+    # Clicking a growing article can select an image or its floating toolbar.
+    # Focus the editable surface directly before keyboard selection instead.
+    editor=page.locator(BODY);editor.wait_for(state='visible');editor.focus()
+    editor.press('Control+A');editor.press('Backspace')
     if body:
         page.evaluate("""html=>navigator.clipboard.write([new ClipboardItem({
             'text/html':new Blob([html],{type:'text/html'}),
@@ -51,7 +55,7 @@ def paste(page,body):
 
 def verify_body(page,doc):
     """Wait for the entire article, or identify WeChat's blocking paste dialog."""
-    chunks=[doc['title'],doc['summary'],doc.get('opening','')]
+    chunks=[doc['summary'],doc.get('opening','')]
     chunks += [text for section in doc['sections'] for text in [section['heading'],*section['paragraphs']]]
     chunks += [doc.get('closing','')]
     result=page.wait_for_function("""({selector,chunks})=>{
@@ -64,7 +68,7 @@ def verify_body(page,doc):
     if result=='structure':
         raise wechat_accounts.WeChatError('微信的“内容结构检测”拦住了正文插入，请检查文章排版；正文尚未完整保存。',uncertain=True)
     from playwright.sync_api import expect
-    expected=sum(bool(section.get('asset_id')) for section in doc['sections'])+bool(doc.get('cover_asset_id'))+bool(decoration_id(doc))
+    expected=sum(bool(section.get('asset_id')) for section in doc['sections'])+bool(decoration_id(doc))
     expect(page.locator(BODY+' img[src^="http"]')).to_have_count(expected)
 
 
@@ -93,41 +97,57 @@ def fill_draft(page,data):
         page.locator('#js_description').fill(data['document']['summary'])
     with stage('上传公众号封面'):
         set_cover(page,wechat_delivery.image_bytes(data['cover_asset_id']),'zhixu-'+data['cover_asset_id']+'.jpg')
-    with stage('设置 AI 创作声明'):
-        declare_ai(page)
+    with stage('设置创作来源'):
+        set_declaration(page,data.get('content_declaration','ai'))
     return paths
 
 
 def fill_body(page,data):
     from playwright.sync_api import expect
     doc=data['document']
-    paste(page,'')
-    expect(page.locator(BODY+' img[src]')).to_have_count(0)
+    # Prepare files before changing the editor; a missing local asset should
+    # never leave a newly cleared body behind.
+    uploads=[(ident,wechat_delivery.inline_image(ident)) for ident in article_export.body_image_ids(doc,wechat=True) if ident]
     paths={}
-    for ident in article_export.body_image_ids(doc):
-        if not ident:continue
-        dismiss_tips(page)
-        name,content,mime=wechat_delivery.inline_image(ident)
-        images=page.locator(BODY+' img[src^="http"]');before=images.count()
-        page.locator(BODY).click();page.keyboard.press('Control+End')
-        page.locator('input[type=file][accept*="image/svg"]').set_input_files({'name':name,'mimeType':mime,'buffer':content})
-        expect(images).to_have_count(before+1,timeout=40000)
-        img=images.nth(before)
-        expect(img).to_have_attribute('src',re.compile(r'https?://'),timeout=40000)
-        paths[ident]=img.get_attribute('src')
-    paste(page,article_export.html_body(doc,paths,wechat=True))
-    verify_body(page,doc)
+    for index,(ident,(name,content,mime)) in enumerate(uploads,1):
+        # Each upload uses an empty editor, so image selection/replacement and
+        # offscreen toolbars cannot invalidate an accumulating image count.
+        with stage(f'准备第 {index}/{len(uploads)} 张正文配图的插入位置'):
+            paste(page,'')
+            expect(page.locator(BODY+' img[src]')).to_have_count(0)
+        with stage(f'上传第 {index}/{len(uploads)} 张正文配图（等待微信确认图片插入）'):
+            images=page.locator(BODY+' img[src^="http"]')
+            page.locator('input[type=file][accept*="image/svg"]').set_input_files({'name':name,'mimeType':mime,'buffer':content})
+            expect(images).to_have_count(1,timeout=40000)
+            img=images.first
+            expect(img).to_have_attribute('src',re.compile(r'https?://'),timeout=40000)
+            paths[ident]=img.get_attribute('src')
+    with stage('粘贴排版后的完整正文'):
+        paste(page,article_export.html_body(doc,paths,wechat=True))
+    with stage('核对正文文字和配图完整性'):
+        verify_body(page,doc)
     return paths
 
 
-def declare_ai(page):
-    selected=page.locator('.js_claim_source_selected')
-    if selected.is_visible() and selected.inner_text().strip()=='内容由AI生成':return
-    page.locator('.js_claim_source_desc').click()
-    page.get_by_text('内容由AI生成',exact=True).click()
-    page.get_by_role('button',name='确认',exact=True).filter(visible=True).click()
+def verify_declaration(page,value='ai'):
     from playwright.sync_api import expect
-    expect(page.locator('.js_claim_source_selected')).to_have_text('内容由AI生成')
+    label=declaration_label(value)
+    selected=page.locator('.js_claim_source_selected')
+    if value=='none':
+        # The editor may show its empty selector again after clearing a claim.
+        if selected.is_visible() and selected.inner_text().strip():expect(selected).to_have_text(label)
+        else:expect(page.locator('.js_claim_source_desc')).to_be_visible()
+    else:expect(selected).to_have_text(label)
+
+
+def set_declaration(page,value='ai'):
+    label=declaration_label(value)
+    selected=page.locator('.js_claim_source_selected')
+    if selected.is_visible() and selected.inner_text().strip()==label:return
+    page.locator('.js_claim_source_desc').click()
+    page.get_by_text(label,exact=True).filter(visible=True).last.click()
+    page.get_by_role('button',name='确认',exact=True).filter(visible=True).click()
+    verify_declaration(page,value)
 
 
 def save_draft(page,data,checkpoint=None):
@@ -162,7 +182,8 @@ def _save_draft(page,data,checkpoint):
     expect(page.locator('#author')).to_have_value(data['author'])
     expect(page.locator('#js_description')).to_have_value(data['document']['summary'])
     expect(page.locator('#js_cover_area .js_cover_preview_new')).to_have_attribute('style',re.compile(r'.*url\(.*'),timeout=20000)
-    expect(page.locator('.js_claim_source_selected')).to_have_text('内容由AI生成')
+    verify_declaration(page,data.get('content_declaration','ai'))
+    data['declaration_applied']=True
     return ids[0],url
 
 
@@ -202,6 +223,56 @@ def deliver(value):
                 checkpoint(page.url)
                 raise
             data.update(media_id=media_id,browser_editor=seal(url))
+            wechat_browser._save(account_id,context,home.url,identity)
+            wechat_delivery.update(run_id,'draft',data)
+        finally:browser.close()
+
+
+def recovery_url(data):
+    url=unseal(data['browser_editor'])
+    ident=str(data.get('browser_draft_id',''))
+    if not ident.isdigit() or parse_qs(urlsplit(url).query).get('appmsgid')!=[ident]:
+        raise ValueError('原草稿地址与编号不一致，已停止恢复，请到公众号后台核对。')
+    return url
+
+
+def resume(value):
+    """Explicitly update the identified draft, never open a new article."""
+    from playwright.sync_api import sync_playwright,expect
+    run_id=value['run_id'];data=value['data'];account_id=value['account_id']
+    if value['mode']!='draft' or data.get('publish_id'):raise ValueError('只支持继续保存尚未发布的原草稿。')
+    url=recovery_url(data)
+    saved=wechat_browser._load(account_id)
+    if not saved:raise ValueError('公众号登录已失效，请重新扫码后继续原草稿。')
+    with sync_playwright() as p:
+        browser=p.chromium.launch(headless=True,executable_path=wechat_browser.executable())
+        try:
+            context=browser.new_context(storage_state=saved['storage'],viewport={'width':1280,'height':850},locale='zh-CN',permissions=['clipboard-read','clipboard-write'])
+            home=context.new_page();home.set_default_timeout(20000)
+            home.goto(saved['url'],wait_until='domcontentloaded')
+            if not wechat_browser.logged_in(home):raise ValueError('公众号登录已失效，请重新扫码后继续原草稿。')
+            identity=wechat_browser.identity(home)
+            if identity['appid']!=data['appid']:raise ValueError('当前公众号与原草稿所属账号不一致，已停止恢复。')
+            page=context.new_page();page.set_default_timeout(20000)
+            with stage('定位原公众号草稿'):
+                page.goto(url,wait_until='domcontentloaded')
+                expect(page.locator(TITLE)).to_be_visible()
+                if parse_qs(urlsplit(page.url).query).get('appmsgid')!=[data['browser_draft_id']]:
+                    raise ValueError('微信未打开原草稿，已停止恢复。')
+                if page.locator(TITLE).inner_text().strip() not in (data.get('_resume_title'),data['title']):
+                    raise ValueError('公众号草稿标题已被修改，请先到公众号后台核对，未覆盖原稿。')
+                if page.get_by_text('已发表',exact=True).filter(visible=True).count():
+                    raise ValueError('原稿已发表，不能作为草稿恢复，请到公众号后台处理。')
+                expect(page.get_by_role('button',name='保存为草稿',exact=True)).to_be_visible()
+            wechat_delivery.update(run_id,'drafting',data)
+            def checkpoint(saved_url):
+                data['browser_editor']=seal(saved_url)
+                wechat_delivery.update(run_id,'drafting',data)
+            fill_draft(page,data)
+            media_id,saved_url=save_draft(page,data,checkpoint)
+            if media_id!=data['browser_draft_id']:raise ValueError('草稿编号发生变化，请到公众号后台核对。')
+            data.update(media_id=media_id,browser_editor=seal(saved_url))
+            data.pop('_resume_browser',None);data.pop('_resume_title',None)
             wechat_browser._save(account_id,context,home.url,identity)
             wechat_delivery.update(run_id,'draft',data)
         finally:browser.close()

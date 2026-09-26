@@ -109,3 +109,5 @@
 #science-fieldnotes .phone-reading-area .preview-selected{outline:2px solid #a77a53;outline-offset:5px;border-radius:3px;background:#a77a5314!important;transition:background .15s}
 #science-fieldnotes .phone-reading-area [data-preview-part]{scroll-margin-top:16px;min-height:1em}
 @media(max-width:620px){#science-fieldnotes .article-live{padding:14px}#science-fieldnotes .article-live-heading{align-items:flex-start}.article-live-heading strong{font-size:12px}}
+
+.auth-modal.article-delivery-modal{width:min(560px,calc(100vw - 32px))}.article-delivery-links{display:flex;gap:20px;flex-wrap:wrap;margin-top:22px;font-size:13px}.article-delivery-modal .wechat-cover-preview{max-width:180px;max-height:110px;object-fit:cover;border-radius:10px}

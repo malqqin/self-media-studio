@@ -19,6 +19,7 @@ def get(article_id):
 
 
 def require(c, article_id, version=None):
+    if version is not None:db.lock(c,'article',article_id)
     value = db.article(c.execute('SELECT * FROM articles WHERE id=%s', (article_id,)).fetchone())
     if not value:
         raise HTTPException(404, '文章不存在。')
@@ -26,6 +27,8 @@ def require(c, article_id, version=None):
         raise HTTPException(409, '文章版本已更新，请刷新后再操作。')
     if version is not None and value['status'] in BUSY:
         raise HTTPException(409, '文章正在生成或检查，请等待完成。')
+    if version is not None and c.execute("SELECT 1 FROM wechat_deliveries WHERE article_id=%s AND status IN ('queued','preparing','drafting','submitting','publishing')",(article_id,)).fetchone():
+        raise HTTPException(409, '文章正在发送到公众号，请等待交付完成后再编辑。')
     return value
 
 

@@ -3,6 +3,7 @@ import type {CSSProperties} from 'react';
 import {Check,ChevronDown,Palette,Search,X} from 'lucide-react';
 import catalog from '../shared/article-templates.json';
 import type {ArticleDocument,ArticleTemplateId} from './types';
+import {displayCaption} from './articleCaptions';
 import './article-templates.css';
 
 type StylePart=keyof typeof catalog.base;
@@ -22,13 +23,12 @@ function ArticleDecoration({template,style}:{template:typeof articleTemplates[nu
 export function ArticleLayout({document:doc,activePart}:{document:ArticleDocument;activePart?:string}){
   const template=articleTemplate(doc.template_id),styles=templateStyles(template.id);
   const highlight=(id:string)=>({'data-preview-part':id,className:activePart===id?'preview-selected':undefined});
-  const image=(id:string,caption:string)=>id?<figure style={styles.figure}><img src={`/api/assets/${encodeURIComponent(id)}/file`} alt={caption||'文章配图'} style={styles.image}/>{caption&&<figcaption style={styles.caption}>{caption}</figcaption>}</figure>:null;
+  const image=(id:string,value:string)=>{const caption=displayCaption(value);return id?<figure style={styles.figure}><img src={`/api/assets/${encodeURIComponent(id)}/file`} alt={caption||'文章配图'} style={styles.image}/>{caption&&<figcaption style={styles.caption}>{caption}</figcaption>}</figure>:null;};
   return <section className="article-layout" data-article-template={template.id} style={styles.root}>
-    <ArticleDecoration template={template} style={styles.decoration}/>
     <h1 style={styles.title} {...highlight('title')}>{doc.title}</h1>
-    {image(doc.cover_asset_id,doc.cover_caption||'')}
     <p style={styles.summary} {...highlight('summary')}>{doc.summary}</p>
     {(doc.opening||activePart==='opening')&&<p style={styles.paragraph} {...highlight('opening')}>{doc.opening||'开头尚未填写'}</p>}
+    <ArticleDecoration template={template} style={styles.decoration}/>
     {doc.sections.map((section,i)=><section key={i}>
       <h2 style={styles.heading} {...highlight(`section-${i}-heading`)}>{template.numbered&&<span style={styles.number}>{String(i+1).padStart(2,'0')}</span>}{section.heading}</h2>
       <div {...highlight(`section-${i}-paragraphs`)}>{section.paragraphs.map((p,j)=><p key={j} style={styles.paragraph} {...highlight(`section-${i}-paragraph-${j}`)}>{p}</p>)}</div>

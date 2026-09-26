@@ -2,11 +2,12 @@
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import re
 import threading
 from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps
-from . import db, article_export, wechat_accounts
+from . import db, article_export, wechat_accounts, wechat_declarations
 from .media import asset_path
 from .article_templates import decoration_path
 
@@ -30,12 +31,23 @@ def public(value):
     data=value['data']
     return {**{k:value[k] for k in ('mode','status','error','updated_at')},
             **{k:data.get(k) for k in ('account_name','appid','article_version','title','media_id','publish_id','article_url')},
-            'channel':data.get('channel','api'),
+            'channel':data.get('channel','api'), 'account_id':value['account_id'],
+            'author':data.get('author',''),'cover_asset_id':data.get('cover_asset_id',''),
+            'content_declaration':data.get('content_declaration','ai'),
+            'declaration_applied':data.get('declaration_applied',False),
+            'can_resume':can_resume(value),
             'can_retry':value['status']=='failed' and not data.get('publish_id')}
 
 
+def can_resume(value):
+    data=value['data']
+    return (value['status'] in ('uncertain','failed') and data.get('channel')=='browser'
+            and value['mode']=='draft' and not data.get('publish_id')
+            and bool(re.fullmatch(r'\d+',str(data.get('browser_draft_id','')))) and bool(data.get('browser_editor')))
+
+
 def update(run_id,status,data,error=None):
-    states={'preparing':'running','drafting':'running','submitting':'running','publishing':'publishing',
+    states={'queued':'queued','preparing':'running','drafting':'running','submitting':'running','publishing':'publishing',
             'draft':'wechat_draft','published':'published','failed':'failed','uncertain':'failed','awaiting_publish':'awaiting_publish'}
     with db.connect() as c:
         c.execute('UPDATE wechat_deliveries SET status=%s,data=%s,error=%s,updated_at=%s WHERE run_id=%s',
@@ -68,31 +80,36 @@ def validate(settings):
     delivery=settings.wechat_delivery
     if delivery.mode=='local':return
     account=wechat_accounts.require_ready(delivery.account_id,delivery.mode)
+    wechat_declarations.validate_delivery(delivery,account)
     if account.get('channel')=='browser' and delivery.mode!='handoff' and len(delivery.author)>8:
         raise ValueError('公众号网页版署名最多 8 字，请缩短署名。')
     generated_cover=settings.illustration.enabled and settings.illustration.cover
     if delivery.cover_asset_id or (delivery.mode!='handoff' and not generated_cover):image_bytes(delivery.cover_asset_id)
 
 
-def _prepare(run_id,article,settings):
+def _prepare(run_id,article,settings,c=None):
     delivery=settings.wechat_delivery
     account=wechat_accounts.require_ready(delivery.account_id,delivery.mode)
-    if not article.get('document') or article['status'] not in ('needs_review','needs_revision','approved'):
+    wechat_declarations.validate_delivery(delivery,account)
+    if not article.get('document') or article['status'] in ('queued','running','needs_angle','needs_outline'):
         raise ValueError('文章尚未生成完成，未发送到公众号。')
-    if delivery.mode=='publish' and (not article.get('checks') or any(i['severity']=='error' for i in article['checks']['issues'])):
+    if delivery.mode=='publish' and (article['status'] not in ('needs_review','needs_revision','approved') or not article.get('checks') or any(i['severity']=='error' for i in article['checks']['issues'])):
         raise ValueError('文章检查存在未解决的问题，已保留本地正文，未自动发布。请修订并完成检查后重试。')
     doc=article['document']
     if delivery.mode!='handoff':image_bytes(doc.get('cover_asset_id') or delivery.cover_asset_id)
     if len(doc['title'])>32:raise ValueError('微信标题不能超过 32 字，请缩短标题并完成检查后重试。')
     if len(doc['summary'])>120:raise ValueError('微信摘要不能超过 120 字，请缩短摘要并完成检查后重试。')
+    if account.get('channel')=='browser' and len(delivery.author)>8:raise ValueError('公众号网页版署名最多 8 字，请缩短署名。')
     data={'account_name':account['name'],'appid':account['appid'],'article_version':article['version'],
           'channel':account.get('channel','api'),'source_data':article.get('source_data',[]),'checks':article.get('checks'),
-          'title':doc['title'],'document':doc,'author':delivery.author,
+          'title':doc['title'],'document':doc,'author':delivery.author,'content_declaration':delivery.content_declaration,
           'cover_asset_id':doc.get('cover_asset_id') or delivery.cover_asset_id,'images':{}}
-    with db.connect() as c:
-        c.execute('INSERT INTO wechat_deliveries(run_id,article_id,account_id,mode,status,data,error,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+    def insert(conn):
+        conn.execute('INSERT INTO wechat_deliveries(run_id,article_id,account_id,mode,status,data,error,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (run_id,article['id'],delivery.account_id,delivery.mode,'preparing',db.dump(data),None,db.now(),db.now()))
-    return get(run_id)
+        return get(run_id,conn)
+    if c is not None:return insert(c)
+    with db.connect() as conn:return insert(conn)
 
 
 def deliver(run_id,article,settings):
@@ -117,13 +134,16 @@ def deliver(run_id,article,settings):
         try:
             account=wechat_accounts.require_ready(value['account_id'],value['mode'])
             if account['appid']!=data['appid']:raise ValueError('发布账号与本次执行记录不一致。')
+            # Apply capability checks to resumed snapshots too, before any write.
+            from .task_models import WeChatDelivery
+            wechat_declarations.validate_delivery(WeChatDelivery(mode=value['mode'],content_declaration=data.get('content_declaration','ai')),account)
             if data.get('channel')=='browser':
                 from . import wechat_browser_delivery
                 wechat_browser_delivery.deliver(value);return
             if not data.get('media_id'):
                 update(run_id,'preparing',data)
                 doc=data['document']
-                body_ids=article_export.body_image_ids(doc)
+                body_ids=article_export.body_image_ids(doc,wechat=True)
                 ids=list(dict.fromkeys([data['cover_asset_id'],*body_ids]))
                 for ident in filter(None,ids):
                     if ident==data['cover_asset_id'] and not data.get('thumb_media_id'):
@@ -197,7 +217,8 @@ def handoff_article(run_id):
 def handoff_content(run_id):
     article=handoff_article(run_id)
     return {'title':article['document']['title'],'html':article_export.html_body(article['document'],wechat=True),
-            'text':article_export.markdown(article['document'])}
+            'text':article_export.markdown(article['document'],wechat=True),
+            'content_declaration':get(run_id)['data'].get('content_declaration','ai')}
 
 
 def tick():
@@ -212,7 +233,10 @@ def tick():
 
 def recover():
     with db.connect() as c:
+        queued=[get(r['run_id'],c) for r in c.execute("SELECT d.run_id FROM wechat_deliveries d JOIN task_runs r ON r.id=d.run_id AND r.owner_id=d.owner_id WHERE d.status='queued' AND r.status!='queued'").fetchall()]
         values=[get(r['run_id'],c) for r in c.execute("SELECT run_id FROM wechat_deliveries WHERE status IN ('preparing','drafting','submitting','publishing')").fetchall()]
+    for value in queued:
+        update(value['run_id'],'failed',value['data'],'交付启动前服务中断，文章快照已保留，可继续发送当前文章。')
     for value in values:
         if value['status']=='preparing':
             update(value['run_id'],'failed',value['data'],'服务在准备素材期间中断，可重试继续本次交付。');continue

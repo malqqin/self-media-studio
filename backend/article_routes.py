@@ -186,6 +186,6 @@ def export(article_id: str, format: str='html', version: int | None=None, wechat
     if format not in ('html','markdown'):
         raise HTTPException(400,'仅支持 HTML、Markdown 或 ZIP。')
     # Standalone exports contain text; a portable ZIP carries image assets.
-    value=article_export.markdown(article['document']) if format=='markdown' else '<!doctype html><meta charset="utf-8">'+article_export.html_body(article['document'],wechat=wechat)
+    value=article_export.markdown(article['document'],wechat=wechat) if format=='markdown' else '<!doctype html><meta charset="utf-8">'+article_export.html_body(article['document'],wechat=wechat)
     return Response(value,media_type='text/markdown' if format=='markdown' else 'text/html',
                     headers={'Content-Disposition':f'attachment; filename="{article_id}.{ "md" if format=="markdown" else "html"}"'})

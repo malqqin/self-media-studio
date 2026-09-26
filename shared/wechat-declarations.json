@@ -1,0 +1,9 @@
+[
+  {"id":"ai","label":"内容由AI生成"},
+  {"id":"news","label":"素材来源官方媒体/网络新闻"},
+  {"id":"fiction","label":"内容剧情演绎，仅供娱乐"},
+  {"id":"opinion","label":"个人观点，仅供参考"},
+  {"id":"health","label":"健康医疗分享，仅供参考"},
+  {"id":"finance","label":"投资观点，仅供参考"},
+  {"id":"none","label":"无需声明"}
+]

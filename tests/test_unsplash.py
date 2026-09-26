@@ -44,9 +44,11 @@ def test_search_hotlinks_attribution_original_and_download_event_only_on_import(
         if path=='search/photos':return {'results':[photo(),photo(id='premium',premium=True),photo(id='bad',links={'html':'https://evil.example/a','download_location':'https://evil.example/key'})]}
         return {'url':'https://images.unsplash.com/photo-123'}
     monkeypatch.setattr(unsplash,'request',respond)
-    result=client.get('/api/pictures/search',params={'query':'mountain','sources':['unsplash'],'details':True})
-    assert result.status_code==200
-    items=result.json()['items'];assert len(items)==1
+    # Old saved candidates retain import and attribution support after removal.
+    items=unsplash.search('mountain');assert len(items)==1
+    from backend import db
+    items[0]['id']='legacy-unsplash-candidate'
+    with db.connect() as c:c.execute('INSERT INTO picture_candidates(id,data,at) VALUES (%s,%s,%s)',(items[0]['id'],db.dump(items[0]),db.now()))
     item=items[0]
     assert item['preview_url']==photo()['urls']['small'] and item['url']==photo()['urls']['regular']
     assert item['credit']=='Test Photographer' and item['license']=='Unsplash License'
@@ -63,12 +65,9 @@ def test_search_hotlinks_attribution_original_and_download_event_only_on_import(
     assert imported['provenance']['author_url']==item['author_url']
 
 
-def test_missing_key_does_not_block_other_selected_sources(client,monkeypatch):
-    monkeypatch.setattr(pictures,'search_360',lambda q:[{'title':'Mountain','url':'https://example.com/mountain.jpg','page_url':'https://example.com/mountain','provider':'360 图片'}])
-    report=client.get('/api/pictures/search',params={'query':'mountain','sources':['unsplash','360'],'details':True}).json()
-    assert [p['status'] for p in report['providers']]==['error','success']
-    assert 'Access Key' in report['providers'][0]['message']
-    assert len(report['items'])==1
+def test_retired_provider_is_removed_from_legacy_task_choices():
+    from backend.picture_models import IllustrationSettings
+    assert IllustrationSettings(web_sources=['unsplash','360']).selected_sources==['360']
 
 
 @pytest.mark.parametrize('status,headers,message',[(401,{},'Access Key 无效'),(429,{},'额度'),(403,{'X-Ratelimit-Remaining':'0'},'额度'),(302,{'Location':'https://evil.example/'},'重定向')])
@@ -97,5 +96,5 @@ def test_task_keeps_selected_sources_and_automatic_run_uses_them(client,illustra
     monkeypatch.setattr(pictures,'search',search)
     monkeypatch.setattr(pictures,'produce',lambda *a:pictures.record(asset(),{'kind':'web',**candidate}))
     run=execute(client,task,'automatic')
-    assert calls and all(s==['unsplash','360'] for s in calls)
+    assert calls and all(s==['360'] for s in calls)
     assert article_worker.get(run['content_id'])['document']['cover_asset_id']

@@ -6,10 +6,14 @@ import base64
 from . import db
 from .media import asset_path
 from .article_templates import get_template, styles, decoration_id, decoration_path
+from .article_captions import display_caption
 
 
-def body_image_ids(doc):
-    return list(dict.fromkeys(filter(None,[decoration_id(doc),doc.get('cover_asset_id','')]+[s.get('asset_id','') for s in doc['sections']])))
+def body_image_ids(doc, *, wechat=False):
+    # WeChat has a separate cover field. Only upload it to the body if the
+    # author also explicitly selected the same image for an article section.
+    cover=[] if wechat else [doc.get('cover_asset_id','')]
+    return list(dict.fromkeys(filter(None,[decoration_id(doc),*cover]+[s.get('asset_id','') for s in doc['sections']])))
 
 
 def images(doc):
@@ -42,6 +46,7 @@ def html_body(doc, image_paths=None, *, wechat=False):
     def image(ident, caption=''):
         if ident not in paths:
             return ''
+        caption=display_caption(caption)
         return f'<figure style="{style("figure")}"><img src="{esc(paths[ident],quote=True)}" alt="{esc(caption,quote=True)}" style="{style("image")}"/>'+ (f'<figcaption style="{style("caption")}">{esc(caption)}</figcaption>' if caption else '')+'</figure>'
     ornament='';ident=decoration_id(doc)
     if ident:
@@ -50,11 +55,16 @@ def html_body(doc, image_paths=None, *, wechat=False):
         source=paths.get(ident)
         if not source and not wechat:source='data:image/png;base64,'+base64.b64encode(decoration_path(ident).read_bytes()).decode()
         if source:ornament=f'<img data-template-decoration="{ident}" src="{esc(source,quote=True)}" alt="" style="{style("decoration")}"/>'
-    body = [f'<section data-article-template="{template["id"]}" style="{style("root")}">',ornament,
-            f'<h1 style="{style("title")}">{esc(doc["title"])}</h1>',
-            image(doc.get('cover_asset_id',''),doc.get('cover_caption','')), paragraph(doc['summary'],'summary')]
+    body = [f'<section data-article-template="{template["id"]}" style="{style("root")}">']
+    if not wechat:
+        body.append(f'<h1 style="{style("title")}">{esc(doc["title"])}</h1>')
+    body.append(paragraph(doc['summary'],'summary'))
     if doc.get('opening'):
         body.append(paragraph(doc['opening']))
+    # All layouts begin with text, including templates with image decorations.
+    if not wechat:
+        body.append(image(doc.get('cover_asset_id',''),doc.get('cover_caption','')))
+    body.append(ornament)
     for index,section in enumerate(doc['sections'],1):
         # WeChat's paste importer flags inline-block number badges as overlapping
         # lines and stops insertion behind a modal. Keep numbers in the heading's
@@ -68,7 +78,7 @@ def html_body(doc, image_paths=None, *, wechat=False):
     return ''.join(body)+ '</section>'
 
 
-def markdown(doc, image_paths=None):
+def markdown(doc, image_paths=None, *, wechat=False):
     paths = image_paths or {}
     # Escape HTML and Markdown controls; exported text must not turn into raw HTML.
     def esc(value):
@@ -76,14 +86,15 @@ def markdown(doc, image_paths=None):
         for char in ('\\','`','*','_','[',']','#','>'):
             value = value.replace(char, '\\'+char)
         return value
-    chunks = ['# '+esc(doc['title']), esc(doc['summary'])]
-    if doc.get('cover_asset_id') in paths:
-        chunks.append(f'![{esc(doc.get("cover_caption") or "封面")}]({paths[doc["cover_asset_id"]]})')
+    chunks = [] if wechat else ['# '+esc(doc['title'])]
+    chunks.append(esc(doc['summary']))
     chunks.append(esc(doc.get('opening','')))
+    if not wechat and doc.get('cover_asset_id') in paths:
+        chunks.append(f'![{esc(display_caption(doc.get("cover_caption")) or "封面")}]({paths[doc["cover_asset_id"]]})')
     for section in doc['sections']:
         chunks += ['## '+esc(section['heading']), *[esc(p) for p in section['paragraphs']]]
         if section.get('asset_id') in paths:
-            chunks.append(f'![{esc(section.get("caption",""))}]({paths[section["asset_id"]]})')
+            chunks.append(f'![{esc(display_caption(section.get("caption")))}]({paths[section["asset_id"]]})')
     chunks.append(esc(doc.get('closing','')))
     return '\n\n'.join(chunks)
 

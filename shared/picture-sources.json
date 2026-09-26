@@ -1,0 +1,5 @@
+[
+  {"id":"360","name":"360 图片","recommended":true,"note":"中文实景与通用配图"},
+  {"id":"sogou","name":"搜狗图片","recommended":true,"note":"中文主题与国内站点"},
+  {"id":"bing","name":"必应图片","recommended":true,"note":"使用必应中国搜索入口"}
+]

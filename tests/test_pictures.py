@@ -52,6 +52,20 @@ def test_manual_asset_configuration_applies_without_image_ai(client,monkeypatch)
     assert doc['sections'][0]['caption']=='测试作者'
 
 
+@pytest.mark.parametrize('value,expected',[
+    ({'credit':'摄影作者','provenance':{'kind':'web','license':'授权待核对'}},'摄影作者'),
+    ({'rights':'授权待核对','provenance':{'kind':'web','license':'授权待核对'}},''),
+    ({'rights':'用户自行确认版权'},''),
+    ({'credit':'摄影作者','provenance':{'kind':'web','license':'CC BY-SA 4.0'}},'摄影作者 · CC BY-SA 4.0'),
+    ({'provenance':{'kind':'ai'}},'AI 生成示意图'),
+])
+def test_automatic_captions_separate_asset_review_status_from_reader_text(value,expected):
+    import copy
+    original=copy.deepcopy(value)
+    assert article_pictures.caption(value)==expected
+    assert value==original
+
+
 def test_ai_images_use_config_and_do_not_duplicate_existing_images(client,illustrated,monkeypatch):
     calls=[]
     def generated(body,ident):calls.append(body);return pictures.record(asset('blue' if len(calls)==1 else 'red'),{'kind':'ai','model':'image-test'})
@@ -96,7 +110,7 @@ def test_web_miss_obeys_fallback_and_reports_missing_images(client,illustrated,m
     monkeypatch.setattr(pictures,'generate',generated)
     run=execute(client,illustrated,'automatic');article=article_worker.get(run['content_id'])
     assert len(calls)==expected and article['status']=='needs_review'
-    if failure=='skip':assert any('授权' in item['message'] for item in article['checks']['issues'])
+    if failure=='skip':assert any('没有找到与主题相关的图片' in item['message'] for item in article['checks']['issues'])
 
 
 def test_images_model_cannot_be_used_for_writing(client,illustrated):
@@ -110,7 +124,9 @@ def test_picture_search_filters_licenses_and_import_crop_are_immutable_idempoten
     def page(license):return {'title':'File:City.jpg','imageinfo':[{'url':'https://upload.wikimedia.org/city.jpg','descriptionurl':'https://commons.wikimedia.org/wiki/File:City.jpg','width':800,'height':600,'mime':'image/jpeg','extmetadata':{'LicenseShortName':{'value':license},'Artist':{'value':'<a>作者</a>'}}}]}
     monkeypatch.setattr(pictures,'fetch_public',lambda *args,**kwargs:(json.dumps({'query':{'pages':{'1':page('CC BY-SA 4.0'),'2':page('All rights reserved')}}}).encode(),''))
     monkeypatch.setattr(pictures,'search_openverse',lambda query:[])
-    results=client.get('/api/pictures/search?query=city&source=licensed').json()
+    results=pictures.search_commons('city')
+    with db.connect() as c:
+        for r in results:c.execute('INSERT INTO picture_candidates(id,data,at) VALUES (%s,%s,%s)',(r['id'],db.dump(r),db.now()))
     assert len(results)==1 and results[0]['credit']=='作者'
     source=asset();monkeypatch.setattr(media,'fetch_image',lambda *args:media.asset_path(source).read_bytes())
     request={'request_id':'import-once','action':'import','candidate_id':results[0]['id']}
@@ -161,6 +177,49 @@ def test_image_transport_posts_generation_and_multipart_edit_without_retries(cli
     assert 'private' not in json.dumps(second)
 
 
+def test_enhance_keeps_source_and_credit_without_model_and_replays_once(client,monkeypatch):
+    monkeypatch.setattr(pictures.executor,'submit',lambda *a:None)
+    monkeypatch.setattr(pictures,'image_connection',lambda *a:pytest.fail('Local enhancement must not call AI'))
+    original=asset();before=pictures.path(original['id']).read_bytes()
+    body={'request_id':'enhance-one','action':'enhance','asset_id':original['id'],'scale':2,'strength':1.5}
+    job=client.post('/api/pictures',json=body).json();pictures.run(job['id'])
+    ready=client.get('/api/pictures/'+job['id']).json()
+    assert ready['status']=='ready'
+    result=ready['asset'];assert result['id']!=original['id']
+    assert result['credit']==original['credit'] and result['rights']==original['rights']
+    assert result['provenance']['parent_asset_id']==original['id']
+    assert result['provenance']['operation']=='enhance'
+    assert pictures.path(original['id']).read_bytes()==before
+    with Image.open(pictures.path(result['id'])) as image:assert image.size==(1600,1200)
+    assert client.post('/api/pictures',json=body).json()['id']==job['id']
+    assert client.post('/api/pictures',json={**body,'scale':3}).status_code==422
+    assert client.post('/api/pictures',json={**body,'strength':10}).status_code==422
+    assert client.post('/api/pictures',json={**body,'request_id':'missing-image','asset_id':'missing'}).status_code==400
+    crop=pictures.produce(PictureRequest(request_id='enhance-crop',action='crop',asset_id=result['id'],width=.5,height=.5),'crop-job')
+    assert crop['provenance']['parent_asset_id']==result['id'] and crop['provenance']['operation']=='crop'
+
+
+def test_watermark_uses_image_edit_endpoint_and_preserves_attribution(client,illustrated,monkeypatch):
+    original=pictures.record(asset(),{'kind':'web','license':'CC BY-SA 4.0','license_url':'https://example.com/license'})
+    before=pictures.path(original['id']).read_bytes();calls=[];real_client=httpx.Client
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200,json={'data':[{'b64_json':base64.b64encode(before).decode()}]})
+    monkeypatch.setattr(pictures.httpx,'Client',lambda **kwargs:real_client(transport=httpx.MockTransport(respond),**kwargs))
+    body={'request_id':'remove-watermark-test','action':'remove_watermark','asset_id':original['id'],'model_id':illustrated['settings']['illustration']['model_id'],'prompt':'仅移除右下角水印'}
+    job=client.post('/api/pictures',json=body).json();pictures.run(job['id']);result=client.get('/api/pictures/'+job['id']).json()
+    assert result['status']=='ready' and len(calls)==1
+    assert calls[0].url.path=='/v1/images/edits'
+    assert '仅移除右下角水印'.encode() in calls[0].content and '保持主体'.encode() in calls[0].content
+    assert b'name="image"' in calls[0].content
+    edited=result['asset'];assert edited['provenance']['operation']=='remove_watermark'
+    assert edited['provenance']['license']=='CC BY-SA 4.0' and edited['credit']==original['credit']
+    assert edited['source_url']==original['source_url'] and edited['provenance']['parent_asset_id']==original['id']
+    assert pictures.path(original['id']).read_bytes()==before
+    assert client.post('/api/pictures',json={**body,'request_id':'missing-model','model_id':''}).status_code==400
+    assert client.post('/api/pictures',json={**body,'asset_id':''}).status_code==422
+
+
 def test_image_redirect_rejected_without_leaking_provider_response(client,illustrated,monkeypatch):
     calls=[];real_client=httpx.Client
     def respond(request):calls.append(request);return httpx.Response(302,headers={'Location':'https://other.example.com'},text='fake-private-key')
@@ -181,8 +240,9 @@ def test_bing_search_uses_chinese_query_validates_urls_and_imports_original(clie
         urls.append(url);assert kwargs['timeout']==6
         return content.encode(),url
     monkeypatch.setattr(pictures,'fetch_public',fetch)
-    result=client.get('/api/pictures/search',params={'query':'平遥古城 城墙','details':True}).json()
+    result=client.get('/api/pictures/search',params={'query':'平遥古城 城墙','sources':['bing'],'details':True}).json()
     assert parse_qs(urlsplit(urls[0]).query)['q']==['平遥古城 城墙']
+    assert urlsplit(urls[0]).hostname=='cn.bing.com'
     assert len(result['items'])==1 and result['providers'][0]['status']=='success'
     candidate=result['items'][0]
     assert candidate['preview_url']==first['turl'] and candidate['url']==first['murl']
@@ -196,47 +256,48 @@ def test_bing_search_uses_chinese_query_validates_urls_and_imports_original(clie
     assert imported['provenance']['license_verified'] is False
 
 
-def test_licensed_provider_outage_falls_back_without_general_web_images(client,monkeypatch):
-    monkeypatch.setattr(pictures,'search_bing',lambda q:pytest.fail('licensed mode must not search general web'))
-    monkeypatch.setattr(pictures,'search_commons',lambda q:(_ for _ in ()).throw(httpx.ConnectTimeout('timeout')))
-    good={'title':'Pingyao','url':'https://photos.example.com/city.jpg','foreign_landing_url':'https://photos.example.com/city','creator':'摄影作者','license':'by-sa','license_version':'4.0','license_url':'https://creativecommons.org/licenses/by-sa/4.0/','width':1000,'height':800}
-    payload={'results':[good,{**good,'license':'by-nc'},{**good,'width':100,'height':100}]}
-    monkeypatch.setattr(pictures,'fetch_public',lambda *a,**k:(json.dumps(payload).encode(),''))
-    report=client.get('/api/pictures/search?query=Pingyao&source=licensed&details=true').json()
-    assert [p['status'] for p in report['providers']]==['error','success']
-    assert len(report['items'])==1 and report['items'][0]['license']=='CC BY-SA 4.0'
-    assert report['items'][0]['license_verified']
-    monkeypatch.setattr(pictures,'search_openverse',lambda q:(_ for _ in ()).throw(ValueError('offline')))
-    report=client.get('/api/pictures/search?query=Pingyao&source=licensed&details=true').json()
-    assert not report['items'] and all(p['status']=='error' for p in report['providers'])
-    assert client.get('/api/pictures/search?query=Pingyao&source=licensed').status_code==400
-    monkeypatch.setattr(pictures,'search_openverse',lambda q:[])
-    assert client.get('/api/pictures/search?query=Pingyao&source=licensed').json()==[]
-    assert client.get('/api/pictures/search?query=city&source=bad').status_code==422
+@pytest.mark.parametrize('source',['baidu','unsplash','commons','openverse'])
+def test_retired_providers_cannot_be_selected_for_new_search(client,monkeypatch,source):
+    monkeypatch.setattr(pictures,'fetch_public',lambda *a,**k:pytest.fail('Retired source must never be called'))
+    assert client.get('/api/pictures/search',params={'query':'AI大模型','sources':[source]}).status_code==422
 
 
-def test_automatic_web_source_is_saved_used_and_keeps_origin(client,illustrated,monkeypatch):
-    illustrated=save(client,illustrated,illustration={**illustrated['settings']['illustration'],'mode':'web','web_source':'web'})
-    assert illustrated['settings']['illustration']['web_source']=='web'
+@pytest.mark.parametrize('legacy_source',['web','licensed'])
+def test_automatic_web_source_is_saved_used_and_keeps_origin(client,illustrated,monkeypatch,legacy_source):
+    illustrated=save(client,illustrated,illustration={**illustrated['settings']['illustration'],'mode':'web','web_source':legacy_source})
+    assert illustrated['settings']['illustration']['web_source']==legacy_source
     candidate={'id':'pic-web','title':'平遥古城','url':'https://photos.example.com/city.jpg','page_url':'https://travel.example.com/pingyao','license':'授权待核对','license_url':'','license_verified':False,'credit':''}
     queries=[]
-    def search(query,source):queries.append((query,source));return [candidate]
+    def search(query,source,sources):queries.append((query,source,sources));return [candidate]
     monkeypatch.setattr(pictures,'search',search)
     monkeypatch.setattr(pictures,'produce',lambda *args:pictures.record(asset(),{'kind':'web',**candidate}))
     run=execute(client,illustrated,'automatic');article=article_worker.get(run['content_id'])
-    assert len(queries)==2 and all(source=='web' for _,source in queries)
+    assert len(queries)==2 and all(source=='web' and sources==['360','sogou','bing'] for _,source,sources in queries)
     assert article['document']['cover_asset_id'] and article['document']['sections'][0]['asset_id']
     assert any('使用条件' in issue['message'] for issue in article['checks']['issues'])
 
 
-def test_web_search_outage_uses_available_library(client,monkeypatch):
+def test_web_search_uses_domestic_defaults_without_silent_overseas_fallback(client,monkeypatch):
     monkeypatch.setattr(pictures,'search_bing',lambda q:(_ for _ in ()).throw(ValueError('search unavailable')))
-    monkeypatch.setattr(pictures,'search_commons',lambda q:[])
-    candidate={'url':'https://photos.example.com/photo.jpg','page_url':'https://photos.example.com/source','title':'City','license':'CC0','license_verified':True,'provider':'Openverse'}
-    monkeypatch.setattr(pictures,'search_openverse',lambda q:[candidate])
+    monkeypatch.setattr(pictures,'search_360',lambda q:[])
+    candidate={'url':'https://photos.example.com/photo.jpg','page_url':'https://photos.example.com/source','title':'City','license':'授权待核对','license_verified':False,'provider':'搜狗图片'}
+    monkeypatch.setattr(pictures,'search_sogou',lambda q:[candidate])
+    for provider in ('commons','openverse','baidu'):
+        monkeypatch.setattr(pictures,'search_'+provider,lambda q:pytest.fail('Unselected backup must not be called'))
     report=client.get('/api/pictures/search?query=City&source=web&details=true').json()
-    assert [p['status'] for p in report['providers']]==['error','empty','success']
-    assert report['items'][0]['provider']=='Openverse'
+    assert [p['status'] for p in report['providers']]==['empty','success','error']
+    assert report['items'][0]['provider']=='搜狗图片'
+
+
+def test_automatic_custom_sites_use_saved_config_and_keep_regular_sources_off(client,illustrated,monkeypatch):
+    task=save(client,illustrated,illustration={**illustrated['settings']['illustration'],'mode':'web','web_sources':[],
+        'custom_sites':['example.com/travel','https://example.com/travel/']})
+    assert task['settings']['illustration']['custom_sites']==['https://example.com/travel']
+    seen=[]
+    def search(query,source,sources,**kwargs):seen.append((sources,kwargs['custom_sites']));return []
+    monkeypatch.setattr(pictures,'search',search)
+    execute(client,task,'automatic')
+    assert seen==[([],['https://example.com/travel']),([],['https://example.com/travel'])]
 
 
 def test_selected_sources_filter_unrelated_images_deduplicate_and_report_failure(client,monkeypatch):
@@ -247,9 +308,9 @@ def test_selected_sources_filter_unrelated_images_deduplicate_and_report_failure
     def so(q):calls.append(('360',q));return [good,good]
     monkeypatch.setattr(pictures,'search_bing',bing)
     monkeypatch.setattr(pictures,'search_360',so)
-    monkeypatch.setattr(pictures,'search_baidu',lambda q:(_ for _ in ()).throw(ValueError('百度图片限制了自动访问')))
+    monkeypatch.setattr(pictures,'search_sogou',lambda q:(_ for _ in ()).throw(ValueError('搜狗图片限制了自动访问')))
     monkeypatch.setattr(pictures,'search_commons',lambda q:pytest.fail('unselected source was called'))
-    report=client.get('/api/pictures/search',params={'query':'AI大模型图片','sources':['bing','360','baidu'],'details':'true'}).json()
+    report=client.get('/api/pictures/search',params={'query':'AI大模型图片','sources':['bing','360','sogou'],'details':'true'}).json()
     assert len(report['items'])==1 and report['items'][0]['url']==good['url']
     assert report['providers'][0]['excluded']==1
     assert [p['status'] for p in report['providers']]==['empty','success','error']

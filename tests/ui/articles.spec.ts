@@ -84,6 +84,48 @@ async function mockStudio(page:Page, existing=false){
   return {writes,get article(){return article;},get task(){return task;},get checks(){return checks;}};
 }
 
+test('saved manual article sends through centered delivery dialog without regeneration',async({page},info)=>{
+  const state=await mockStudio(page,true);const sent:any[]=[];
+  await page.route('**/api/wechat/accounts',route=>route.fulfill({json:[{id:'wx-ui',name:'测试公众号',channel:'browser',draft_ready:true,session_saved:true,publish_ready:false}]}));
+  await page.route('**/api/assets',route=>route.fulfill({json:[{id:'cover-ui',filename:'封面.jpg',media_type:'image/jpeg'}]}));
+  await page.route('**/api/assets/cover-ui/file',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#a0b298"/></svg>'}));
+  await page.route('**/api/task-runs/run-ui/publication',route=>{sent.push(route.request().postDataJSON());return route.fulfill({json:{status:'queued'}});});
+  await page.goto('/#task/task-ui-test');
+  await page.getByLabel('主标题',{exact:true}).fill('用户编辑过的标题');
+  await expect(page.getByRole('button',{name:'发送到公众号',exact:true})).toBeDisabled();
+  await page.getByRole('button',{name:'保存修改',exact:true}).click();
+  await page.getByRole('button',{name:'发送到公众号',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'发送到公众号'});
+  await expect(dialog).toBeVisible();await expect(dialog).toContainText('用户编辑过的标题');
+  await expect(dialog.getByLabel('发送到哪个公众号')).toHaveValue('wx-ui');
+  await expect(dialog.getByRole('option',{name:'公开发布（官方 API）'})).toHaveAttribute('disabled','');
+  await page.getByRole('combobox',{name:'发布封面',exact:true}).selectOption('cover-ui');
+  await page.getByRole('combobox',{name:'公众号创作来源',exact:true}).selectOption('opinion');
+  await page.screenshot({path:info.outputPath('article-delivery-dialog.png'),fullPage:false});
+  await dialog.getByRole('button',{name:'发送当前文章到草稿箱'}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(sent).toEqual([{version:6,delivery:{mode:'draft',account_id:'wx-ui',author:'',cover_asset_id:'cover-ui',content_declaration:'opinion'},resume:false}]);
+  expect(state.article!.document!.title).toBe('用户编辑过的标题');
+  expect(state.writes.every(w=>w.path.endsWith('/document'))).toBe(true);
+});
+
+test('failed browser delivery explicitly resumes the existing draft',async({page})=>{
+  const state=await mockStudio(page,true);const sent:any[]=[];
+  await page.route('**/api/tasks/task-ui-test',route=>route.fulfill({json:{...state.task,runs:[{id:'run-ui',task_id:state.task.id,action:'automatic',status:'failed',stage:'delivery',content_id:state.article!.id,settings:state.task.settings,reports:[],created_at:state.article!.created_at,updated_at:state.article!.updated_at,error:null,publication:{status:'uncertain',mode:'draft',can_resume:true,account_id:'wx-ui',author:'作者',cover_asset_id:'cover-ui',article_version:5,title:document.title}}]}}));
+  await page.route('**/api/wechat/accounts',route=>route.fulfill({json:[{id:'wx-ui',name:'测试公众号',channel:'browser',draft_ready:true,session_saved:true}]}));
+  await page.route('**/api/assets',route=>route.fulfill({json:[{id:'cover-ui',filename:'封面.jpg',media_type:'image/jpeg'}]}));
+  await page.route('**/api/task-runs/run-ui/publication',route=>{sent.push(route.request().postDataJSON());return route.fulfill({json:{status:'queued'}});});
+  await page.goto('/#task/task-ui-test');
+  await page.getByRole('button',{name:'继续保存原草稿',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'发送到公众号'});
+  await expect(dialog.getByLabel('发送到哪个公众号')).toBeDisabled();
+  await dialog.getByRole('button',{name:'继续保存原草稿',exact:true}).click();
+  const confirmation=page.getByRole('alertdialog');await expect(confirmation).toContainText('覆盖这些修改');
+  await confirmation.getByRole('button',{name:'继续保存原草稿',exact:true}).click();
+  await expect(dialog).toHaveCount(0);expect(sent).toHaveLength(1);expect(sent[0].resume).toBe(true);
+  expect(state.writes).toEqual([]);
+});
+
 test('all templates preview safely, filter, save and restore with history',async({page},testInfo)=>{
   test.setTimeout(60000);
   const state=await mockStudio(page,true);
@@ -455,25 +497,54 @@ test('version history is a drawer beside the title and respects unsaved content 
 });
 
 
+test('phone article starts with text, separates the cover and hides legacy rights status captions',async({page},testInfo)=>{
+  const state=await mockStudio(page,true),doc=state.article!.document!;
+  doc.template_id='sage';doc.cover_asset_id='cover-only';doc.cover_caption='授权待核对';
+  doc.sections=[{...doc.sections[0],asset_id:'inline',caption:'授权待核对'},
+    {...doc.sections[0],heading:'保留真实署名',asset_id:'credited',caption:'摄影：小王 · CC BY-SA 4.0 · 授权待核对'}];
+  await page.route('**/api/assets/*/file',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300"><rect width="600" height="300" fill="#d9e3d2"/><path d="M0 300L170 100L370 300Z" fill="#668865"/></svg>'}));
+  await page.goto('/#task/task-ui-test');
+  const preview=page.locator('.phone-preview'),layout=preview.locator('.article-layout');
+  await expect(preview.locator('h1')).toHaveText(doc.title);
+  await expect(preview.locator('img[src*="cover-only"]')).toHaveCount(0);
+  await expect(preview.locator('figure img')).toHaveCount(2);
+  await expect(preview).not.toContainText('授权待核对');
+  await expect(preview.locator('figcaption')).toHaveText('摄影：小王 · CC BY-SA 4.0');
+  await expect(preview.locator('img[src*="inline"]')).toHaveAttribute('alt','文章配图');
+  expect(await layout.evaluate(e=>Array.from(e.children).slice(0,4).map(c=>c.tagName))).toEqual(['H1','P','P','IMG']);
+  await expect(preview.locator('[data-preview-part="opening"]')).toHaveText(doc.opening);
+  await page.getByLabel('主标题',{exact:true}).focus();
+  await expect(preview.locator('h1')).toHaveClass('preview-selected');
+  await page.getByRole('textbox',{name:'开头',exact:true}).focus();
+  await expect(preview.locator('[data-preview-part="opening"]')).toHaveClass('preview-selected');
+  await preview.screenshot({path:testInfo.outputPath('text-first-phone.png'),animations:'disabled'});
+  expect(state.article!.document!.sections[0].caption).toBe('授权待核对');
+});
+
+
 test('web pictures show loading, source failures and Chinese results, then import the selected original',async({page},testInfo)=>{
   const state=await mockStudio(page,true),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  // Old articles inherited the overseas source without an explicit selection.
+  state.article!.input_data._illustration={web_source:'licensed',web_sources:[]};
   let release:()=>void=()=>{};const waiting=new Promise<void>(resolve=>release=resolve);const requests:any[]=[];
   const candidate={id:'pic-bing',title:'平遥古城的城墙',url:'https://photos.example.com/original.jpg',preview_url:'https://photos.example.com/preview.jpg',page_url:'https://travel.example.com/pingyao',credit:'',license:'授权待核对',license_url:'',description:'',provider:'必应图片',license_verified:false};
   await page.route('https://photos.example.com/preview.jpg',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="#c6b296"/><path d="M0 210h600v190H0Z" fill="#81766a"/><path d="M0 190h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v40h50v-40h50v210H0Z" fill="#978774"/></svg>'}));
   await page.route('**/api/pictures/search?**',async route=>{
     const params=new URL(route.request().url()).searchParams,source=params.get('source'),sources=params.getAll('sources');
-    if(sources.includes('commons'))return route.fulfill({json:{query:params.get('query'),source,items:[],providers:[{name:'Wikimedia Commons',status:'error',count:0},{name:'Openverse',status:'error',count:0}]}});
-    expect(sources).toEqual(['bing','360']);
+    if(sources.length===1&&sources[0]==='sogou')return route.fulfill({json:{query:params.get('query'),source,items:[],providers:[{name:'搜狗图片',status:'error',count:0,message:'连接超时'}]}});
+    expect(sources).toEqual(['360','sogou','bing']);
     await waiting;return route.fulfill({json:{query:params.get('query'),source,items:[candidate],providers:[{name:'必应图片',status:'success',count:1}]}});
   });
   await page.route('**/api/pictures',async route=>{requests.push(route.request().postDataJSON());return route.fulfill({json:{id:'picture-import',status:'ready',asset:{id:'asset-import',filename:candidate.title,media_type:'image/jpeg',rights:'授权待核对',credit:'',source_url:candidate.page_url,provenance:{kind:'web',license:'授权待核对'}},error:null}});});
   await page.goto('/#task/task-ui-test');
   await openPicture(page,'联网找图');
   const drawer=page.getByRole('dialog');await expect(page.getByRole('checkbox',{name:'必应图片',exact:true})).toBeChecked();
-  await page.getByLabel('图片搜索词').fill('平遥古城 城墙');await page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true}).check();await drawer.getByRole('button',{name:'搜索图片'}).click();
-  await expect(drawer.locator('.picture-search-error')).toContainText('更换搜索来源');await expect(drawer.locator('.picture-provider.error')).toHaveCount(2);
+  for(const name of ['360 图片','搜狗图片'])await expect(drawer.getByRole('checkbox',{name,exact:true})).toBeChecked();
+  await drawer.locator('.picture-source-options').screenshot({path:testInfo.outputPath('domestic-picture-sources.png')});
+  await page.getByLabel('图片搜索词').fill('平遥古城 城墙');await drawer.getByRole('checkbox',{name:'360 图片',exact:true}).uncheck();await drawer.getByRole('checkbox',{name:'必应图片',exact:true}).uncheck();await drawer.getByRole('button',{name:'搜索图片'}).click();
+  await expect(drawer.locator('.picture-search-error')).toContainText('更换搜索来源');await expect(drawer.locator('.picture-provider.error')).toHaveCount(1);
   await expect(drawer.locator('.picture-placeholder')).toHaveCount(0);
-  await page.getByRole('checkbox',{name:'Wikimedia Commons',exact:true}).uncheck();await drawer.getByRole('button',{name:'搜索图片'}).click();
+  await drawer.getByRole('button',{name:'使用国内推荐',exact:true}).click();await drawer.getByRole('button',{name:'搜索图片'}).click();
   await expect(drawer.locator('.picture-search-status')).toBeVisible();await expect(drawer.getByRole('button',{name:'正在找图…'})).toBeDisabled();release();
   await expect(drawer.locator('.picture-result')).toHaveCount(1);await expect(drawer.locator('.picture-search-report')).toContainText('找到 1 张图片');
   await expect(drawer.locator('.picture-result img')).toHaveAttribute('src',candidate.preview_url);
@@ -482,9 +553,10 @@ test('web pictures show loading, source failures and Chinese results, then impor
   await drawer.screenshot({path:testInfo.outputPath('web-pictures-desktop.png')});
   await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await drawer.screenshot({path:testInfo.outputPath('web-pictures-mobile.png')});
-  await drawer.getByRole('button',{name:'使用这张图片'}).click();await expect(drawer).toHaveCount(0);
+  await drawer.getByRole('button',{name:'用此图'}).click();await expect(drawer).toHaveCount(0);
   expect(requests[0]).toMatchObject({action:'import',candidate_id:'pic-bing'});
   await page.getByRole('button',{name:'保存修改',exact:true}).click();await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-import');expect(errors).toEqual([]);
+  expect(state.article!.document!.cover_caption).toBe('');
 });
 
 test('picture previews recover from broken thumbnails, offer retry and keep Unsplash direct',async({page},testInfo)=>{
@@ -548,48 +620,32 @@ test('picture pagination requests later results, caches pages and recovers from 
   await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await drawer.screenshot({path:testInfo.outputPath('picture-pagination-mobile.png')});
   await drawer.getByLabel('图片搜索词').fill('city');await expect(pager).toHaveCount(0);await expect(drawer.locator('.picture-result')).toHaveCount(0);
-  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['bing','360']});
+  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['360','sogou','bing']});
   await drawer.getByRole('checkbox',{name:'必应图片',exact:true}).uncheck();await expect(pager).toHaveCount(0);
-  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['360']});
+  await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();await expect(pager).toContainText('第 1 页');expect(calls.at(-1)).toEqual({query:'city',page:1,sources:['360','sogou']});
 });
 
-test('Unsplash connects once, searches with other providers and keeps photographer attribution',async({page},testInfo)=>{
-  const state=await mockStudio(page,true),writes:any[]=[],errors:string[]=[];let connected=false;
-  page.on('pageerror',e=>errors.push(e.message));
-  await page.route('**/api/picture-sources/unsplash',async route=>{
-    if(route.request().method()==='PUT'){const body=route.request().postDataJSON();writes.push(body);connected=!body.clear_key;}
-    return route.fulfill({json:{key_configured:connected}});
-  });
-  const candidate={id:'pic-unsplash',title:'Mountain lake',url:'https://images.unsplash.com/photo-example?w=1080',preview_url:'https://images.unsplash.com/photo-example?w=400',page_url:'https://unsplash.com/photos/example?utm_source=self_media_studio&utm_medium=referral',author_url:'https://unsplash.com/@photographer?utm_source=self_media_studio&utm_medium=referral',credit:'Test Photographer',license:'Unsplash License',license_url:'https://unsplash.com/license',description:'Mountain lake',provider:'Unsplash',license_verified:true};
-  await page.route('https://images.unsplash.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#b5c8bc"/><path d="M0 500L250 100L550 500Z" fill="#627e72"/></svg>'}));
+test('custom picture sites search only their scope and removed providers are absent',async({page},info)=>{
+  const state=await mockStudio(page,true),requests:any[]=[];
+  state.article!.input_data._illustration={web_sources:['commons','openverse']};
   await page.route('**/api/pictures/search?**',route=>{
-    const params=new URL(route.request().url()).searchParams;
-    expect(params.getAll('sources')).toEqual(['bing','360','unsplash']);expect(params.get('query')).toBe('mountain');
-    return route.fulfill({json:{items:[candidate],providers:[{name:'Unsplash',status:'success',count:1}],query:'mountain',source:'web'}});
-  });
-  await page.route('**/api/pictures',route=>{
-    writes.push(route.request().postDataJSON());return route.fulfill({json:{id:'import-unsplash',status:'ready',asset:{id:'asset-unsplash',filename:candidate.title,media_type:'image/jpeg',rights:candidate.license,credit:candidate.credit,source_url:candidate.page_url,provenance:{kind:'web',license:candidate.license,author_url:candidate.author_url}}}});
+    const p=new URL(route.request().url()).searchParams;requests.push({sources:p.getAll('sources'),sites:p.getAll('custom_sites'),query:p.get('query')});
+    return route.fulfill({json:{items:[],query:p.get('query'),page:1,has_more:false,providers:[{name:'自定义 · example.com/travel',status:'empty',count:0}]}});
   });
   await page.goto('/#task/task-ui-test');await openPicture(page,'联网找图');
-  const drawer=page.getByRole('dialog');await drawer.getByRole('checkbox',{name:'Unsplash',exact:true}).check();
-  await expect(drawer.locator('.unsplash-connection')).toContainText('待连接');await drawer.locator('.unsplash-connection summary').click();
-  await drawer.getByLabel('Unsplash Access Key').fill('test-access-key');await drawer.getByRole('button',{name:'验证并保存连接'}).click();
-  await expect(drawer.locator('.unsplash-connection')).toContainText('已配置');await expect(drawer.getByLabel('Unsplash Access Key')).toHaveValue('');
-  expect(writes[0]).toEqual({access_key:'test-access-key'});expect(JSON.stringify(state.task)).not.toContain('test-access-key');
-  await drawer.getByLabel('图片搜索词').fill('mountain');await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();
-  await expect(drawer.getByRole('link',{name:'Test Photographer',exact:true})).toHaveAttribute('href',candidate.author_url);
-  await expect(drawer.locator('.picture-result img')).toHaveAttribute('src',candidate.preview_url);
-  await drawer.screenshot({path:testInfo.outputPath('unsplash-desktop.png')});
+  const drawer=page.getByRole('dialog');
+  for(const name of ['百度图片','Unsplash','Wikimedia Commons','Openverse'])await expect(drawer.getByRole('checkbox',{name,exact:true})).toHaveCount(0);
+  await drawer.getByRole('textbox',{name:'自定义图片网站'}).fill('example.com/travel');await drawer.getByRole('button',{name:'添加网站',exact:true}).click();
+  for(const name of ['360 图片','搜狗图片','必应图片'])await drawer.getByRole('checkbox',{name,exact:true}).uncheck();
+  await drawer.getByLabel('图片搜索词').fill('古城');await drawer.getByRole('button',{name:'搜索图片',exact:true}).click();
+  await expect.poll(()=>requests).toEqual([{sources:[],sites:['https://example.com/travel'],query:'古城'}]);
+  await expect(drawer.locator('.picture-search-report')).toContainText('自定义 · example.com/travel');
+  await drawer.locator('.picture-source-options').screenshot({path:info.outputPath('custom-picture-sources.png')});
   await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  await drawer.screenshot({path:testInfo.outputPath('unsplash-mobile.png')});
-  await drawer.getByRole('button',{name:'使用这张图片'}).click();await expect(drawer).toHaveCount(0);
-  expect(writes[1]).toMatchObject({action:'import',candidate_id:'pic-unsplash'});
-  await page.getByRole('button',{name:'保存修改',exact:true}).click();await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('asset-unsplash');
-  await openPicture(page,'联网找图');
-  await expect(drawer.locator('.unsplash-connection')).toContainText('已配置');await drawer.locator('.unsplash-connection summary').click();
-  await drawer.getByRole('button',{name:'断开连接'}).click();await expect(drawer.locator('.unsplash-connection')).toContainText('待连接');
-  expect(errors).toEqual([]);
+  await drawer.getByRole('button',{name:'移除图片网站 https://example.com/travel'}).click();
+  await expect(drawer.getByRole('button',{name:'搜索图片',exact:true})).toBeDisabled();
 });
+
 
 test('picture cards select, crop and generate locally, with locks and saved versions',async({page},testInfo)=>{
   const state=await mockStudio(page,true),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
@@ -610,7 +666,7 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   await page.goto('/#task/task-ui-test');
   const card=page.getByRole('region',{name:'封面图片',exact:true});
   await openPicture(page);
-  await page.getByRole('dialog').getByRole('button',{name:'古城实景 摄影作者'}).click();
+  await page.getByRole('dialog').locator('.picture-result').filter({hasText:'古城实景'}).getByRole('button',{name:'用此图'}).click();
   await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/asset-photo/file');
   const drawer=await openPicture(page);
   await drawer.getByLabel('图片说明与署名').fill('古城屋檐 · 摄影作者');
@@ -621,10 +677,12 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   await card.getByRole('button',{name:'设置封面图片',exact:true}).click();
   await drawer.getByRole('button',{name:'已锁定'}).click();
   await drawer.getByRole('button',{name:'裁剪',exact:true}).click();
-  await expect(page.getByRole('dialog').getByRole('img',{name:'原图裁剪预览'})).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('img',{name:'当前编辑图片'})).toBeVisible();
   await page.getByLabel('裁剪比例').selectOption('1');
-  await page.getByRole('button',{name:'保存裁剪并使用'}).click();
+  await page.getByRole('button',{name:'应用裁剪'}).click();
   await expect(page.getByRole('button',{name:'保存修改',exact:true})).toBeDisabled();
+  await expect(page.getByRole('dialog').getByRole('img',{name:'当前编辑图片'})).toHaveAttribute('src','/api/assets/asset-new-1/file');
+  await page.getByRole('dialog').getByRole('button',{name:'用此图',exact:true}).click();
   await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/asset-new-1/file');
   expect(requests[0]).toMatchObject({action:'crop',asset_id:'asset-photo',width:.75,height:1});
   await page.getByRole('button',{name:'保存修改',exact:true}).click();
@@ -634,6 +692,8 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   await page.getByLabel('基于当前图片调整',{exact:false}).check();
   await page.getByLabel('图片修改要求').fill('保留建筑，调整为温暖的日落光线');
   await page.getByRole('button',{name:'按要求调整图片'}).click();
+  await expect(page.getByRole('dialog',{name:'图片预览'})).toBeVisible();
+  await page.getByRole('dialog').getByRole('button',{name:'用此图',exact:true}).click();
   await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/asset-new-2/file');
   expect(requests[1]).toMatchObject({action:'edit',asset_id:'asset-new-1',model_id:'image-model',prompt:'保留建筑，调整为温暖的日落光线'});
   await card.screenshot({path:testInfo.outputPath('picture-card.png')});
@@ -650,4 +710,81 @@ test('picture cards select, crop and generate locally, with locks and saved vers
   await expect(page.getByRole('dialog').getByRole('button',{name:'搜索图片'})).toHaveCSS('display','inline-flex');
   await page.getByRole('dialog').screenshot({path:testInfo.outputPath('picture-drawer-mobile.png')});
   expect(errors).toEqual([]);
+});
+
+
+test('picture editor previews before applying, preserves undo redo history and handles failed edits',async({page},info)=>{
+  const state=await mockStudio(page,true),errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  const photo={id:'editor-original',filename:'古城原图',media_type:'image/jpeg',rights:'本人摄影',credit:'摄影作者',source_url:'',provenance:{kind:'upload'}};
+  state.article!.document!.cover_asset_id=photo.id;
+  const requests:any[]=[],savedAssets:any[]=[photo];let watermarkCalls=0,enhancePolls=0;
+  await page.route('**/api/assets',route=>route.fulfill({json:savedAssets}));
+  await page.route('**/api/assets/*/file',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#ded8ba"/><circle cx="650" cy="130" r="65" fill="#e6ad63"/><path d="M0 500L250 100L500 500L650 270L800 500Z" fill="#647e67"/></svg>'}));
+  await page.route('**/api/models',route=>route.fulfill({json:[...models,{...models[0],id:'image-editor',name:'图片编辑模型',protocol:'images',image_edit:true}]}));
+  await page.route('**/api/pictures',route=>{
+    const body=route.request().postDataJSON();requests.push(body);
+    if(body.action==='enhance')return route.fulfill({json:{id:'edit-enhance',status:'queued',asset:null,error:null}});
+    if(body.action==='remove_watermark'&&++watermarkCalls===1)return route.fulfill({json:{id:'edit-failed',status:'failed',asset:null,error:'图片模型暂时不可用'}});
+    const asset={...photo,id:'edited-'+requests.length,filename:'编辑结果',provenance:{kind:'ai',parent_asset_id:body.asset_id,operation:body.action}};savedAssets.push(asset);
+    return route.fulfill({json:{id:'job-'+requests.length,status:'ready',asset,error:null}});
+  });
+  await page.route('**/api/pictures/edit-enhance',route=>{if(++enhancePolls===1)return route.fulfill({json:{id:'edit-enhance',status:'running',asset:null,error:null}});const asset={...photo,id:'enhanced',filename:'清晰原图',provenance:{kind:'upload',parent_asset_id:photo.id,operation:'enhance'}};savedAssets.push(asset);return route.fulfill({json:{id:'edit-enhance',status:'ready',asset,error:null}});});
+  await page.goto('/#task/task-ui-test');
+  const card=page.getByRole('region',{name:'封面图片',exact:true});
+  await card.getByRole('button',{name:'预览',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'图片预览'})).toBeVisible();expect(requests).toHaveLength(0);
+  await page.getByRole('dialog').getByRole('button',{name:'编辑',exact:true}).click();
+  const editor=page.getByRole('dialog',{name:'图片编辑器'}),image=editor.getByRole('img',{name:'当前编辑图片',exact:true});
+  await expect(image).toBeVisible();await editor.getByRole('button',{name:'开始变清晰'}).click();
+  await expect(editor.getByRole('status')).toContainText('正在变清晰');await expect(editor.getByRole('button',{name:'用此图',exact:true})).toBeDisabled();
+  await expect(image).toHaveAttribute('src','/api/assets/enhanced/file');
+  expect(requests[0]).toMatchObject({action:'enhance',asset_id:photo.id,scale:2,strength:1.5});
+  expect(state.article!.document!.cover_asset_id).toBe(photo.id);
+  await editor.getByRole('button',{name:'对比原图',exact:true}).click();await expect(editor.getByRole('img',{name:'编辑前原图'})).toHaveAttribute('src','/api/assets/editor-original/file');
+  await editor.getByRole('button',{name:'查看当前效果'}).click();
+  await editor.getByRole('button',{name:'撤回',exact:true}).click();await expect(image).toHaveAttribute('src','/api/assets/editor-original/file');
+  await editor.getByRole('button',{name:'重做',exact:true}).click();await expect(image).toHaveAttribute('src','/api/assets/enhanced/file');
+  await editor.getByRole('button',{name:'去水印',exact:true}).click();await editor.getByLabel('水印位置或补充要求').fill('只去掉右下角水印');
+  await editor.getByRole('button',{name:'开始去水印',exact:true}).click();await expect(page.getByRole('alert')).toContainText('图片模型暂时不可用');
+  await expect(image).toHaveAttribute('src','/api/assets/enhanced/file');
+  await expect(editor.locator('.picture-editor-history button')).toHaveCount(2);
+  await editor.getByRole('button',{name:'开始去水印',exact:true}).click();await expect(image).toHaveAttribute('src','/api/assets/edited-3/file');
+  expect(requests[2]).toMatchObject({action:'remove_watermark',asset_id:'enhanced',model_id:'image-editor',prompt:'只去掉右下角水印'});
+  await editor.getByRole('button',{name:'恢复原图'}).click();await expect(image).toHaveAttribute('src','/api/assets/editor-original/file');
+  await editor.getByRole('button',{name:'重做',exact:true}).click();
+  await editor.getByRole('button',{name:'AI 调整',exact:true}).click();await editor.getByLabel('图片修改要求').fill('保留建筑细节，改为日落光线');
+  await editor.getByRole('button',{name:'开始调整'}).click();await expect(image).toHaveAttribute('src','/api/assets/edited-4/file');
+  await expect(editor.getByRole('button',{name:'重做',exact:true})).toBeDisabled();await expect(editor.locator('.picture-editor-history button')).toHaveCount(3);
+  await expect(page.locator('.notification-popup')).toHaveCount(0);
+  await editor.screenshot({path:info.outputPath('picture-editor-desktop.png')});
+  await editor.getByRole('button',{name:'用此图',exact:true}).click();
+  await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/edited-4/file');
+  await page.getByRole('button',{name:'保存修改',exact:true}).click();await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('edited-4');
+  await card.getByRole('button',{name:'编辑',exact:true}).click();await expect(editor.getByRole('button',{name:'撤回',exact:true})).toBeEnabled();
+  await editor.getByRole('button',{name:'恢复原图'}).click();await expect(image).toHaveAttribute('src','/api/assets/editor-original/file');
+  await page.setViewportSize({width:390,height:844});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await editor.screenshot({path:info.outputPath('picture-editor-mobile.png')});
+  await editor.getByRole('button',{name:'返回',exact:true}).click();
+  await expect(card.getByRole('img',{name:'封面图片',exact:true})).toHaveAttribute('src','/api/assets/edited-4/file');
+  expect(state.article!.document!.cover_asset_id).toBe('edited-4');expect(errors).toEqual([]);
+});
+
+test('web image preview is read only until edit or use and edit import failure is recoverable',async({page})=>{
+  const state=await mockStudio(page,true),requests:any[]=[];
+  const candidate={id:'candidate-edit',title:'古城照片',url:'https://photos.example.com/original.jpg',preview_url:'https://photos.example.com/preview.jpg',page_url:'https://travel.example.com/city',credit:'摄影作者',license:'',license_url:'',provider:'搜狗图片'};
+  await page.route('https://photos.example.com/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#708770"/></svg>'}));
+  await page.route('**/api/assets/*/file',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="#708770"/></svg>'}));
+  await page.route('**/api/pictures/search?**',route=>route.fulfill({json:{items:[candidate],query:'古城',page:1,has_more:false,providers:[{name:'搜狗图片',status:'success',count:1}]}}));
+  await page.route('**/api/pictures',route=>{const body=route.request().postDataJSON();requests.push(body);return route.fulfill({json:requests.length===1?{id:'import-fail',status:'failed',asset:null,error:'原图暂时无法下载'}:{id:'import-ok',status:'ready',asset:{id:'imported-photo',filename:'古城照片',media_type:'image/jpeg',rights:'',credit:'摄影作者',source_url:candidate.page_url,provenance:{kind:'web'}},error:null}});});
+  await page.goto('/#task/task-ui-test');await openPicture(page,'联网找图');await page.getByLabel('图片搜索词').fill('古城');await page.getByRole('button',{name:'搜索图片',exact:true}).click();
+  const result=page.locator('.picture-result');await result.getByRole('button',{name:'预览',exact:true}).click();
+  const preview=page.getByRole('dialog',{name:'图片预览'});await expect(preview.getByRole('img',{name:'古城照片'})).toHaveAttribute('src',candidate.url);expect(requests).toHaveLength(0);
+  await preview.getByRole('button',{name:'返回',exact:true}).click();await result.getByRole('button',{name:'编辑',exact:true}).click();
+  const editor=page.getByRole('dialog',{name:'图片编辑器'});await expect(page.getByRole('alert')).toContainText('原图暂时无法下载');
+  await editor.getByRole('button',{name:'重新载入原图'}).click();await expect(editor.getByRole('img',{name:'当前编辑图片'})).toBeVisible();
+  await expect(editor.getByRole('button',{name:'开始变清晰'})).toBeEnabled();
+  await editor.getByRole('button',{name:'去水印',exact:true}).click();await expect(editor.getByRole('button',{name:'开始去水印'})).toBeDisabled();await expect(editor).toContainText('请在“我的模型”添加');
+  expect(state.article!.document!.cover_asset_id).toBe('');await expect(page.locator('.article-workspace-heading .ss-badge')).not.toContainText('有未保存修改');
+  await editor.getByRole('button',{name:'用此图',exact:true}).click();await page.getByRole('button',{name:'保存修改',exact:true}).click();
+  await expect.poll(()=>state.article!.document!.cover_asset_id).toBe('imported-photo');expect(requests.map(r=>r.action)).toEqual(['import','import']);
 });

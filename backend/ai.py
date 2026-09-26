@@ -30,6 +30,14 @@ def strict_schema(schema):
     return schema
 
 
+def output_limit_message(kind, max_tokens):
+    if kind=='article_check':
+        return (f'文章核对达到本次请求的 {max_tokens:,} token 输出上限（推理模型的思考也可能占用此额度），未取得完整核对结果。'
+                '正文和历史版本已保留，可从“核对文章”这一步重试，无需重新生成正文。')
+    return (f'模型输出达到上限，本次请求额度为 {max_tokens:,} token（推理模型的思考也可能占用此额度）。'
+            '本次结果不完整，未替换已保存内容。请重试或调整模型配置。')
+
+
 def request_structured(model_class,instructions,data,job_id,kind,*,connection=None,max_tokens=6000):
     from .ai_stream import stream_sink, streamed_result
     from .model_library import connection as selected_connection
@@ -83,12 +91,12 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
         if chat:
             choices=result.get('choices') or []
             if choices and choices[0].get('finish_reason')=='length':
-                raise ModelOutputLimitError('模型输出达到上限，内容被截断且未作为完整正文保存。请减少目标字数或使用输出额度更高的模型后重试。')
+                raise ModelOutputLimitError(output_limit_message(kind,max_tokens))
             if not choices or choices[0].get('finish_reason') not in ('stop',None):raise ModelRequestError('模型未完整返回结果，请检查输出限制。')
             answer=choices[0].get('message',{}).get('content','')
         else:
             if result.get('status')=='incomplete' and (result.get('incomplete_details') or {}).get('reason')=='max_output_tokens':
-                raise ModelOutputLimitError('模型输出达到上限，内容被截断且未作为完整正文保存。请减少目标字数或使用输出额度更高的模型后重试。')
+                raise ModelOutputLimitError(output_limit_message(kind,max_tokens))
             if result.get('status')!='completed':raise ModelRequestError('模型未完整返回结果，请检查接口协议或输出限制。')
             answer=''.join(content.get('text','') for out in result.get('output',[]) if out.get('type')=='message'
                      for content in out.get('content',[]) if content.get('type')=='output_text')
@@ -99,7 +107,7 @@ def request_structured(model_class,instructions,data,job_id,kind,*,connection=No
         except ValueError:raise ModelRequestError('模型返回内容不符合所需 JSON 格式。请调整输出格式或更换模型。','invalid_output') from None
     except httpx.HTTPStatusError as error:
         status=error.response.status_code
-        hint={401:'密钥无效或未授权',403:'服务商拒绝访问',404:'接口路径或模型不存在',429:'额度不足或请求过多'}.get(status,'接口参数或服务异常')
+        hint={400:'请求参数不被支持（包括模型允许的最大输出额度）',401:'密钥无效或未授权',403:'服务商拒绝访问',404:'接口路径或模型不存在',429:'额度不足或请求过多'}.get(status,'接口参数或服务异常')
         raise failure(f'模型接口 HTTP {status}：{hint}。请检查地址、协议、模型和输出格式。','http_error') from None
     except httpx.TimeoutException:
         raise failure('等待模型响应超时，未自动重复请求。请稍后重试，或检查模型服务是否拥堵。','timeout') from None

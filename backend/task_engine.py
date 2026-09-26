@@ -99,6 +99,10 @@ def run(ident):
     raw=json.loads(row['settings']);settings=TaskSettings.model_validate({k:v for k,v in raw.items() if not k.startswith('_')})
     automatic=row['action']=='automatic';blank=row['action']=='blank'
     try:
+        if raw.get('_delivery_only'):
+            from . import article_delivery
+            article_delivery.execute(ident)
+            return
         with model_library.use(settings.model_id):
             content_id=row['content_id']
             if not content_id:
